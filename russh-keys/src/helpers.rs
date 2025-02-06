@@ -121,4 +121,4 @@ mod algorithm {
 #[doc(hidden)]
 pub use algorithm::AlgorithmExt;
 
-use crate::keys::key::PrivateKeyWithHashAlg;
+use crate::key::PrivateKeyWithHashAlg;

@@ -7,7 +7,7 @@ use ssh_key::private::RsaKeypair;
 use ssh_key::PrivateKey;
 
 use super::is_base64_char;
-use crate::keys::Error;
+use crate::Error;
 
 pub mod openssh;
 

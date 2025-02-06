@@ -3,6 +3,7 @@ use core::str;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 use log::debug;
+use russh_cryptovec::CryptoVec;
 use ssh_encoding::{Decode, Encode, Reader};
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
 use tokio;
@@ -10,8 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::{msg, Constraint};
 use crate::helpers::EncodedExt;
-use crate::keys::{key, Error};
-use crate::CryptoVec;
+use crate::{key, Error};
 
 pub trait AgentStream: AsyncRead + AsyncWrite {}
 

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "russh-keys",
     "russh",
     "russh-config",
     "cryptovec",

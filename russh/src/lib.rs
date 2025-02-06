@@ -60,7 +60,10 @@
 //! # Design principles
 //!
 //! The main goal of this library is conciseness, and reduced size and
-//! readability of the library's code.
+//! readability of the library's code. Moreover, this library is split
+//! between Russh, which implements the main logic of SSH clients
+//! and servers, and Russh-keys, which implements calls to
+//! cryptographic primitives.
 //!
 //! One non-goal is to implement all possible cryptographic algorithms
 //! published since the initial release of SSH. Technical debt is
@@ -110,7 +113,8 @@ pub mod kex;
 /// MAC algorithm names
 pub mod mac;
 
-pub mod keys;
+/// Re-export of the `russh-keys` crate.
+pub use russh_keys as keys;
 
 mod msg;
 mod negotiation;
@@ -123,8 +127,6 @@ mod pty;
 
 pub use pty::Pty;
 pub use sshbuffer::SshId;
-
-mod helpers;
 
 macro_rules! push_packet {
     ( $buffer:expr, $x:expr ) => {{
@@ -275,7 +277,7 @@ pub enum Error {
     RequestDenied,
 
     #[error(transparent)]
-    Keys(#[from] crate::keys::Error),
+    Keys(#[from] russh_keys::Error),
 
     #[error(transparent)]
     IO(#[from] std::io::Error),

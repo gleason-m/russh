@@ -1,6 +1,6 @@
 use ssh_key::PrivateKey;
 
-use crate::keys::Error;
+use crate::Error;
 
 /// Decode a secret key given in the OpenSSH format, deciphering it if
 /// needed using the supplied password.

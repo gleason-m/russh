@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use rand_core::OsRng;
-use russh::keys::{Certificate, *};
+use russh::keys::*;
 use russh::server::{Msg, Server as _, Session};
 use russh::*;
+use russh_keys::Certificate;
 use tokio::sync::Mutex;
 
 #[tokio::main]
@@ -19,7 +20,7 @@ async fn main() {
         auth_rejection_time: std::time::Duration::from_secs(3),
         auth_rejection_time_initial: Some(std::time::Duration::from_secs(0)),
         keys: vec![
-            russh::keys::PrivateKey::random(&mut OsRng, russh::keys::Algorithm::Ed25519).unwrap(),
+            russh_keys::PrivateKey::random(&mut OsRng, russh_keys::Algorithm::Ed25519).unwrap(),
         ],
         preferred: Preferred {
             // kex: std::borrow::Cow::Owned(vec![russh::kex::DH_GEX_SHA256]),
