@@ -60,15 +60,6 @@ pub struct Preferred {
     pub compression: Cow<'static, [compression::Name]>,
 }
 
-pub(crate) fn is_key_compatible_with_algo(key: &PrivateKey, algo: &Algorithm) -> bool {
-    match algo {
-        // All RSA keys are compatible with all RSA based algos.
-        Algorithm::Rsa { .. } => key.algorithm().is_rsa(),
-        // Other keys have to match exactly
-        a => key.algorithm() == *a,
-    }
-}
-
 impl Preferred {
     pub(crate) fn possible_host_key_algos_for_keys(
         &self,
@@ -76,11 +67,7 @@ impl Preferred {
     ) -> Vec<Algorithm> {
         self.key
             .iter()
-            .filter(|n| {
-                available_host_keys
-                    .iter()
-                    .any(|k| is_key_compatible_with_algo(k, *n))
-            })
+            .filter(|n| available_host_keys.iter().any(|k| k.algorithm() == **n))
             .cloned()
             .collect::<Vec<_>>()
     }
@@ -446,12 +433,7 @@ pub fn write_kex(
             prefs
                 .key
                 .iter()
-                .filter(|algo| {
-                    server_config
-                        .keys
-                        .iter()
-                        .any(|k| is_key_compatible_with_algo(k, *algo))
-                })
+                .filter(|algo| server_config.keys.iter().any(|k| k.algorithm() == **algo))
                 .map(|x| x.to_string())
                 .collect(),
         )
