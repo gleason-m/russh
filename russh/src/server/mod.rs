@@ -638,7 +638,7 @@ async fn start_reading<R: AsyncRead + Unpin>(
 
 /// An active server session returned by [run_stream].
 ///
-/// Implements [Future] and can be awaited to wait for the session to finish.
+/// Implements [Future] and needs to be awaited to allow the session to run.
 pub struct RunningSession<H: Handler> {
     handle: Handle,
     join: JoinHandle<Result<(), H::Error>>,
@@ -665,7 +665,7 @@ impl<H: Handler> Future for RunningSession<H> {
     }
 }
 
-/// Start a single connection in the background.
+/// Run a single connection to completion.
 pub async fn run_stream<H, R>(
     config: Arc<Config>,
     mut stream: R,
