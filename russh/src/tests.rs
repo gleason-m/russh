@@ -15,6 +15,7 @@ mod compress {
 
     use super::server::{Server as _, Session};
     use super::*;
+    use crate::keys::key::PrivateKeyWithHashAlg;
     use crate::server::Msg;
 
     #[tokio::test]
@@ -52,7 +53,7 @@ mod compress {
         let authenticated = session
             .authenticate_publickey(
                 std::env::var("USER").unwrap_or("user".to_owned()),
-                Arc::new(client_key),
+                PrivateKeyWithHashAlg::new(Arc::new(client_key), None).unwrap(),
             )
             .await
             .unwrap()
@@ -145,6 +146,7 @@ mod channels {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+    use crate::keys::key::PrivateKeyWithHashAlg;
     use crate::CryptoVec;
 
     async fn test_session<RC, RS, CH, SH, F1, F2>(
@@ -195,7 +197,7 @@ mod channels {
             let authenticated = session
                 .authenticate_publickey(
                     std::env::var("USER").unwrap_or("user".to_owned()),
-                    Arc::new(client_key),
+                    PrivateKeyWithHashAlg::new(Arc::new(client_key), None).unwrap(),
                 )
                 .await
                 .unwrap();
