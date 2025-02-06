@@ -761,15 +761,13 @@ impl Session {
                     match &msg.typ {
                         ChannelType::Session => {
                             confirm();
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client.server_channel_open_session(channel, self).await?
+                            client.server_channel_open_session(id, self).await?
                         }
                         ChannelType::DirectTcpip(d) => {
                             confirm();
-                            let channel = self.accept_server_initiated_channel(id, &msg);
                             client
                                 .server_channel_open_direct_tcpip(
-                                    channel,
+                                    id,
                                     &d.host_to_connect,
                                     d.port_to_connect,
                                     &d.originator_address,
@@ -820,16 +818,11 @@ impl Session {
                         }
                         ChannelType::AgentForward => {
                             confirm();
-                            let channel = self.accept_server_initiated_channel(id, &msg);
-                            client
-                                .server_channel_open_agent_forward(channel, self)
-                                .await?
+                            client.server_channel_open_agent_forward(id, self).await?
                         }
                         ChannelType::Unknown { typ } => {
-                            if client.should_accept_unknown_server_channel(id, typ).await {
+                            if client.server_channel_handle_unknown(id, typ) {
                                 confirm();
-                                let channel = self.accept_server_initiated_channel(id, &msg);
-                                client.server_channel_open_unknown(channel, self).await?;
                             } else {
                                 debug!("unknown channel type: {}", String::from_utf8_lossy(typ));
                                 msg.unknown_type(&mut enc.write);
