@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use rand_core::OsRng;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
@@ -141,6 +142,7 @@ impl Server for AppServer {
     }
 }
 
+#[async_trait]
 impl Handler for AppServer {
     type Error = anyhow::Error;
 

@@ -8,6 +8,7 @@ mod compress {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    use async_trait::async_trait;
     use keys::PrivateKeyWithHashAlg;
     use log::debug;
     use rand_core::OsRng;
@@ -89,6 +90,7 @@ mod compress {
         }
     }
 
+    #[async_trait]
     impl server::Handler for Server {
         type Error = super::Error;
 
@@ -125,6 +127,7 @@ mod compress {
 
     struct Client {}
 
+    #[async_trait]
     impl client::Handler for Client {
         type Error = super::Error;
 
@@ -139,6 +142,7 @@ mod compress {
 }
 
 mod channels {
+    use async_trait::async_trait;
     use keys::PrivateKeyWithHashAlg;
     use rand_core::OsRng;
     use server::Session;
@@ -220,6 +224,7 @@ mod channels {
         #[derive(Debug)]
         struct Client {}
 
+        #[async_trait]
         impl client::Handler for Client {
             type Error = crate::Error;
 
@@ -254,6 +259,7 @@ mod channels {
             }
         }
 
+        #[async_trait]
         impl server::Handler for ServerHandle {
             type Error = crate::Error;
 
@@ -300,6 +306,7 @@ mod channels {
         #[derive(Debug)]
         struct Client {}
 
+        #[async_trait]
         impl client::Handler for Client {
             type Error = crate::Error;
 
@@ -325,6 +332,7 @@ mod channels {
             }
         }
 
+        #[async_trait]
         impl server::Handler for ServerHandle {
             type Error = crate::Error;
 
@@ -394,6 +402,7 @@ mod channels {
         #[derive(Debug)]
         struct Client {}
 
+        #[async_trait]
         impl client::Handler for Client {
             type Error = crate::Error;
 
@@ -409,6 +418,7 @@ mod channels {
 
         impl ServerHandle {}
 
+        #[async_trait]
         impl server::Handler for ServerHandle {
             type Error = crate::Error;
 
@@ -469,6 +479,7 @@ mod channels {
         #[derive(Debug)]
         struct Client {}
 
+        #[async_trait]
         impl client::Handler for Client {
             type Error = crate::Error;
 
@@ -494,6 +505,7 @@ mod channels {
             }
         }
 
+        #[async_trait]
         impl server::Handler for ServerHandle {
             type Error = crate::Error;
 

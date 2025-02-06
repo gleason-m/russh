@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use log::debug;
 use rand_core::OsRng;
 use russh::keys::*;
@@ -46,6 +47,7 @@ impl server::Server for Server {
     }
 }
 
+#[async_trait]
 impl server::Handler for Server {
     type Error = anyhow::Error;
 

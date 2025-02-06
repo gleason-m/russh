@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use clap::Parser;
 use log::info;
 use russh::keys::*;
@@ -56,6 +57,7 @@ struct Client {}
 // More SSH event handlers
 // can be defined in this trait
 // In this example, we're only using Channel, so these aren't needed.
+#[async_trait]
 impl client::Handler for Client {
     type Error = russh::Error;
 

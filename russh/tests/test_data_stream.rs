@@ -114,6 +114,7 @@ impl russh::server::Server for Server {
     }
 }
 
+#[async_trait::async_trait]
 impl russh::server::Handler for Server {
     type Error = anyhow::Error;
 
@@ -147,6 +148,7 @@ impl russh::server::Handler for Server {
 
 struct Client;
 
+#[async_trait::async_trait]
 impl russh::client::Handler for Client {
     type Error = anyhow::Error;
 
