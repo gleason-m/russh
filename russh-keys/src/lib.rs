@@ -94,7 +94,7 @@ mod backend;
 #[path = "backend_rust.rs"]
 mod backend;
 
-/// OpenSSH agent protocol implementation
+/// A module to write SSH agent.
 pub mod agent;
 
 #[derive(Debug, Error)]
@@ -191,7 +191,7 @@ pub enum Error {
     #[cfg(feature = "legacy-ed25519-pkcs8-parser")]
     LegacyASN1(::yasna::ASN1Error),
 
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     #[error("Pageant: {0}")]
     Pageant(#[from] pageant::Error),
 }

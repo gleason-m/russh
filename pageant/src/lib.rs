@@ -4,8 +4,8 @@
 //!
 //! This crate only implements the transport, not the actual SSH agent protocol.
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 mod pageant_impl;
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 pub use pageant_impl::*;
