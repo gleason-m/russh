@@ -65,16 +65,16 @@ mod private_key_with_hash_alg {
     impl PrivateKeyWithHashAlg {
         /// Direct constructor.
         ///
+        /// Will fail if you specify a `hash_alg` for a key type other than RSA.
         /// For RSA, passing `None` is mapped to the legacy `sha-rsa` (SHA-1).
-        /// For other keys, `hash_alg` is ignored.
         pub fn new(
             key: Arc<crate::keys::PrivateKey>,
-            mut hash_alg: Option<crate::keys::HashAlg>,
-        ) -> Self {
-            if !key.algorithm().is_rsa() {
-                hash_alg = None;
+            hash_alg: Option<crate::keys::HashAlg>,
+        ) -> Result<Self, crate::keys::Error> {
+            if hash_alg.is_some() && !key.algorithm().is_rsa() {
+                return Err(crate::keys::Error::InvalidParameters);
             }
-            Self { key, hash_alg }
+            Ok(Self { key, hash_alg })
         }
 
         pub fn algorithm(&self) -> Algorithm {

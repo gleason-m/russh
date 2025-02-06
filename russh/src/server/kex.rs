@@ -272,7 +272,8 @@ impl ServerKex {
                 // Hash signature
                 debug!("signing with key {:?}", key);
                 let signature = sign_with_hash_alg(
-                    &PrivateKeyWithHashAlg::new(Arc::new(key.clone()), signature_hash_alg),
+                    &PrivateKeyWithHashAlg::new(Arc::new(key.clone()), signature_hash_alg)
+                        .map_err(Into::into)?,
                     &hash,
                 )
                 .map_err(Into::into)?;

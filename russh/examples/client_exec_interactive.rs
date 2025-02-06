@@ -112,13 +112,7 @@ impl Session {
         // use publickey authentication, with or without certificate
         if openssh_cert.is_none() {
             let auth_res = session
-                .authenticate_publickey(
-                    user,
-                    PrivateKeyWithHashAlg::new(
-                        Arc::new(key_pair),
-                        session.best_supported_rsa_hash().await?.flatten(),
-                    ),
-                )
+                .authenticate_publickey(user, Arc::new(key_pair))
                 .await?;
 
             if !auth_res.success() {
