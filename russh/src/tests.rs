@@ -11,7 +11,6 @@ mod compress {
     use async_trait::async_trait;
     use log::debug;
     use rand_core::OsRng;
-    use russh_keys::key::PrivateKeyWithHashAlg;
     use ssh_key::PrivateKey;
 
     use super::server::{Server as _, Session};
@@ -54,7 +53,7 @@ mod compress {
         let authenticated = session
             .authenticate_publickey(
                 std::env::var("USER").unwrap_or("user".to_owned()),
-                PrivateKeyWithHashAlg::new(Arc::new(client_key), None).unwrap(),
+                Arc::new(client_key),
             )
             .await
             .unwrap();
@@ -141,7 +140,6 @@ mod compress {
 mod channels {
     use async_trait::async_trait;
     use rand_core::OsRng;
-    use russh_keys::key::PrivateKeyWithHashAlg;
     use server::Session;
     use ssh_key::PrivateKey;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -197,7 +195,7 @@ mod channels {
             let authenticated = session
                 .authenticate_publickey(
                     std::env::var("USER").unwrap_or("user".to_owned()),
-                    PrivateKeyWithHashAlg::new(Arc::new(client_key), None).unwrap(),
+                    Arc::new(client_key),
                 )
                 .await
                 .unwrap();

@@ -18,7 +18,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitflags::bitflags;
 use russh_keys::helpers::NameList;
-use russh_keys::key::PrivateKeyWithHashAlg;
 use ssh_key::{Certificate, PrivateKey};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -87,7 +86,7 @@ pub enum Method {
         password: String,
     },
     PublicKey {
-        key: PrivateKeyWithHashAlg,
+        key: Arc<PrivateKey>,
     },
     OpenSshCertificate {
         key: Arc<PrivateKey>,

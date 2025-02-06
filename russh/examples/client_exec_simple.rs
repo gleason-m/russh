@@ -9,7 +9,6 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
-use key::PrivateKeyWithHashAlg;
 use log::info;
 use russh::keys::*;
 use russh::*;
@@ -92,7 +91,7 @@ impl Session {
 
         let mut session = client::connect(config, addrs, sh).await?;
         let auth_res = session
-            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key_pair), None)?)
+            .authenticate_publickey(user, Arc::new(key_pair))
             .await?;
 
         if !auth_res {

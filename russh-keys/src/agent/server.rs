@@ -16,8 +16,7 @@ use tokio::time::sleep;
 use {std, tokio};
 
 use super::{msg, Constraint};
-use crate::helpers::{sign_workaround_encoded, EncodedExt};
-use crate::key::PrivateKeyWithHashAlg;
+use crate::helpers::{sign_workaround, EncodedExt};
 use crate::Error;
 
 #[derive(Clone)]
@@ -343,8 +342,8 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
         writebuf.push(msg::SIGN_RESPONSE);
         let data = Bytes::decode(r)?;
 
-        sign_workaround_encoded(&PrivateKeyWithHashAlg::new(key, None)?, &data)?
-            .encode(writebuf)?;
+        let signature = sign_workaround(&key, &data)?;
+        signature.encoded()?.encode(writebuf)?;
 
         let len = writebuf.len();
         BigEndian::write_u32(writebuf, (len - 4) as u32);
