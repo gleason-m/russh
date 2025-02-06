@@ -185,6 +185,7 @@ pub fn parse(file: &str, host: &str) -> Result<Config, Error> {
 }
 
 fn check_host_against_glob_pattern(candidate: &str, glob_pattern: &str) -> bool {
+    dbg!(candidate, glob_pattern);
     match Glob::new(glob_pattern) {
         Ok(glob) => glob.compile_matcher().is_match(candidate),
         _ => false,
