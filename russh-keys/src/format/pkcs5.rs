@@ -1,8 +1,7 @@
 use aes::*;
-use ssh_key::PrivateKey;
 
 use super::Encryption;
-use crate::Error;
+use crate::{key, Error};
 
 /// Decode a secret key in the PKCS#5 format, possibly deciphering it
 /// using the supplied password.
@@ -10,7 +9,7 @@ pub fn decode_pkcs5(
     secret: &[u8],
     password: Option<&str>,
     enc: Encryption,
-) -> Result<PrivateKey, Error> {
+) -> Result<key::KeyPair, Error> {
     use aes::cipher::{BlockDecryptMut, KeyIvInit};
     use block_padding::Pkcs7;
 
@@ -29,7 +28,7 @@ pub fn decode_pkcs5(
             }
             Encryption::Aes256Cbc(_) => unimplemented!(),
         };
-        super::decode_rsa_pkcs1_der(&sec).map(Into::into)
+        super::decode_rsa(&sec)
     } else {
         Err(Error::KeyIsEncrypted)
     }

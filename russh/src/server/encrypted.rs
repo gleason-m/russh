@@ -12,23 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use core::str;
 use std::cell::RefCell;
-use std::time::SystemTime;
 
 use auth::*;
 use byteorder::{BigEndian, ByteOrder};
-use cert::PublicKeyOrCertificate;
 use log::{debug, error, info, trace, warn};
 use negotiation::Select;
-use signature::Verifier;
-use ssh_key::{Algorithm, PublicKey, Signature};
 use tokio::time::Instant;
 use {msg, negotiation};
 
 use super::super::*;
 use super::*;
 use crate::keys::encoding::{Encoding, Position, Reader};
+use crate::keys::key;
+use crate::keys::key::Verify;
 use crate::msg::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED;
 use crate::parsing::{ChannelOpenConfirmation, ChannelType, OpenChannelMessage};
 
@@ -407,41 +404,13 @@ impl Encrypted {
         } else {
             unreachable!()
         };
-
         let is_real = r.read_byte().map_err(crate::Error::from)?;
         let pubkey_algo = r.read_string().map_err(crate::Error::from)?;
         let pubkey_key = r.read_string().map_err(crate::Error::from)?;
-
-        let key_or_cert = PublicKeyOrCertificate::decode(pubkey_algo, pubkey_key);
-
-        // Parse the public key or certificate
-        match key_or_cert {
-            Ok(pk_or_cert) => {
+        debug!("algo: {:?}, key: {:?}", pubkey_algo, pubkey_key);
+        match key::PublicKey::parse(pubkey_algo, pubkey_key) {
+            Ok(mut pubkey) => {
                 debug!("is_real = {:?}", is_real);
-
-                // Handle certificates specifically
-                let pubkey = match pk_or_cert {
-                    PublicKeyOrCertificate::PublicKey(ref pk) => pk.clone(),
-                    PublicKeyOrCertificate::Certificate(ref cert) => {
-                        // Validate certificate expiration
-                        let now = SystemTime::now();
-                        if now < cert.valid_after_time() || now > cert.valid_before_time() {
-                            warn!("Certificate is expired or not yet valid");
-                            reject_auth_request(until, &mut self.write, auth_request).await;
-                            return Ok(());
-                        }
-
-                        // Verify the certificate’s signature
-                        if cert.verify_signature().is_err() {
-                            warn!("Certificate signature is invalid");
-                            reject_auth_request(until, &mut self.write, auth_request).await;
-                            return Ok(());
-                        }
-
-                        // Use certificate's public key for authentication
-                        PublicKey::new(cert.public_key().clone(), "")
-                    }
-                };
 
                 if is_real != 0 {
                     let pos0 = r.position;
@@ -454,18 +423,14 @@ impl Encrypted {
                     };
 
                     let signature = r.read_string().map_err(crate::Error::from)?;
+                    debug!("signature = {:?}", signature);
                     let mut s = signature.reader(0);
-                    let algo = s.read_string().map_err(crate::Error::from)?;
-
+                    let algo_ = s.read_string().map_err(crate::Error::from)?;
+                    if let Some(hash) = key::SignatureHash::from_rsa_hostkey_algo(algo_) {
+                        pubkey.set_algorithm(hash);
+                    }
+                    debug!("algo_: {:?}", algo_);
                     let sig = s.read_string().map_err(crate::Error::from)?;
-                    #[allow(clippy::indexing_slicing)]
-                    let sig = Signature::new(
-                        Algorithm::new(str::from_utf8(algo).map_err(crate::Error::from)?)
-                            .map_err(crate::Error::from)?,
-                        sig,
-                    )
-                    .map_err(crate::Error::from)?;
-
                     #[allow(clippy::indexing_slicing)] // length checked
                     let init = &buf[0..pos0];
 
@@ -479,7 +444,6 @@ impl Encrypted {
                     } else {
                         false
                     };
-
                     if is_valid {
                         let session_id = self.session_id.as_ref();
                         #[allow(clippy::blocks_in_conditions)]
@@ -488,18 +452,11 @@ impl Encrypted {
                             buf.clear();
                             buf.extend_ssh_string(session_id);
                             buf.extend(init);
-
-                            Verifier::verify(&pubkey, &buf, &sig).is_ok()
+                            // Verify signature.
+                            pubkey.verify_client_auth(&buf, sig)
                         }) {
                             debug!("signature verified");
-                            let auth = match pk_or_cert {
-                                PublicKeyOrCertificate::PublicKey(ref pk) => {
-                                    handler.auth_publickey(user, pk).await?
-                                }
-                                PublicKeyOrCertificate::Certificate(ref cert) => {
-                                    handler.auth_openssh_certificate(user, cert).await?
-                                }
-                            };
+                            let auth = handler.auth_publickey(user, &pubkey).await?;
 
                             if auth == Auth::Accept {
                                 server_auth_request_success(&mut self.write);
@@ -562,9 +519,9 @@ impl Encrypted {
                     Ok(())
                 }
             }
-            Err(ssh_key::Error::AlgorithmUnknown)
-            | Err(ssh_key::Error::AlgorithmUnsupported { .. })
-            | Err(ssh_key::Error::CertificateValidation { .. }) => {
+            Err(russh_keys::Error::CouldNotReadKey)
+            | Err(russh_keys::Error::KeyIsCorrupt)
+            | Err(russh_keys::Error::UnsupportedKeyType { .. }) => {
                 reject_auth_request(until, &mut self.write, auth_request).await;
                 Ok(())
             }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::marker::Sync;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
@@ -8,19 +9,17 @@ use byteorder::{BigEndian, ByteOrder};
 use futures::future::Future;
 use futures::stream::{Stream, StreamExt};
 use russh_cryptovec::CryptoVec;
-use ssh_key::PrivateKey;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::sleep;
 use {std, tokio};
 
 use super::{msg, Constraint};
 use crate::encoding::{Encoding, Position, Reader};
-use crate::helpers::EncodedExt;
-use crate::{add_signature, Error};
+use crate::{key, Error};
 
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
-struct KeyStore(Arc<RwLock<HashMap<Vec<u8>, (Arc<PrivateKey>, SystemTime, Vec<Constraint>)>>>);
+struct KeyStore(Arc<RwLock<HashMap<Vec<u8>, (Arc<key::KeyPair>, SystemTime, Vec<Constraint>)>>>);
 
 #[derive(Clone)]
 struct Lock(Arc<RwLock<CryptoVec>>);
@@ -46,7 +45,7 @@ pub enum MessageType {
 pub trait Agent: Clone + Send + 'static {
     fn confirm(
         self,
-        _pk: Arc<PrivateKey>,
+        _pk: Arc<key::KeyPair>,
     ) -> Box<dyn Future<Output = (Self, bool)> + Unpin + Send> {
         Box::new(futures::future::ready((self, true)))
     }
@@ -82,7 +81,10 @@ where
 }
 
 impl Agent for () {
-    fn confirm(self, _: Arc<PrivateKey>) -> Box<dyn Future<Output = (Self, bool)> + Unpin + Send> {
+    fn confirm(
+        self,
+        _: Arc<key::KeyPair>,
+    ) -> Box<dyn Future<Output = (Self, bool)> + Unpin + Send> {
         Box::new(futures::future::ready((self, true)))
     }
 }
@@ -249,15 +251,19 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
         writebuf: &mut CryptoVec,
     ) -> Result<bool, Error> {
         let (blob, key_pair) = {
-            use ssh_encoding::Decode;
+            use ssh_encoding::{Decode, Encode};
 
             let private_key = ssh_key::private::PrivateKey::new(
                 ssh_key::private::KeypairData::decode(&mut r)?,
                 "",
             )?;
             let _comment = r.read_string()?;
+            let key_pair = key::KeyPair::try_from(&private_key)?;
 
-            (private_key.public_key().key_data().encoded()?, private_key)
+            let mut blob = Vec::new();
+            private_key.public_key().key_data().encode(&mut blob)?;
+
+            (blob, key_pair)
         };
         writebuf.push(msg::SUCCESS);
         let mut w = self.keys.0.write().or(Err(Error::AgentFailure))?;
@@ -326,9 +332,7 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
         };
         writebuf.push(msg::SIGN_RESPONSE);
         let data = r.read_string()?;
-
-        add_signature(&*key, data, writebuf)?;
-
+        key.add_signature(writebuf, data)?;
         let len = writebuf.len();
         BigEndian::write_u32(writebuf, (len - 4) as u32);
 
