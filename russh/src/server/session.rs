@@ -15,7 +15,6 @@ use crate::kex::EXTENSION_SUPPORT_AS_CLIENT;
 use crate::msg;
 
 /// A connected server session. This type is unique to a client.
-#[derive(Debug)]
 pub struct Session {
     pub(crate) common: CommonSession<Arc<Config>>,
     pub(crate) sender: Handle,
@@ -26,7 +25,6 @@ pub struct Session {
     pub(crate) channels: HashMap<ChannelId, ChannelRef>,
     pub(crate) open_global_requests: VecDeque<GlobalRequestResponse>,
 }
-
 #[derive(Debug)]
 pub enum Msg {
     ChannelOpenAgent {
@@ -84,7 +82,7 @@ impl From<(ChannelId, ChannelMsg)> for Msg {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 /// Handle to a session, used to send messages to a client outside of
 /// the request/response cycle.
 pub struct Handle {

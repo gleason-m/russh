@@ -53,7 +53,6 @@ pub(crate) struct Encrypted {
     pub compress_buffer: CryptoVec,
 }
 
-#[derive(Debug)]
 pub(crate) struct CommonSession<Config> {
     pub auth_user: String,
     pub remote_sshid: Vec<u8>,
@@ -656,7 +655,6 @@ pub(crate) struct NewKeys {
     pub sent: bool,
 }
 
-#[derive(Debug)]
 pub(crate) enum GlobalRequestResponse {
     /// request was for Keepalive, ignore result
     Keepalive,
