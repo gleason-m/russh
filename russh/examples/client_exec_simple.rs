@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 ///
 /// Run this example with:
 /// cargo run --example client_exec_simple -- -k <private key path> <host> <command>
@@ -85,10 +84,6 @@ impl Session {
         let key_pair = load_secret_key(key_path, None)?;
         let config = client::Config {
             inactivity_timeout: Some(Duration::from_secs(5)),
-            preferred: Preferred {
-                kex: Cow::Owned(vec![russh::kex::DH_GEX_SHA256]),
-                ..Default::default()
-            },
             ..<_>::default()
         };
 

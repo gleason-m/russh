@@ -4,17 +4,16 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use log::{debug, error, warn};
+use log::{debug, error};
 use russh_cryptovec::CryptoVec;
 use russh_keys::key::parse_public_key;
 use signature::Verifier;
 use ssh_encoding::{Decode, Encode};
-use ssh_key::{Mpint, PublicKey, Signature};
+use ssh_key::{PublicKey, Signature};
 
 use super::IncomingSshPacket;
 use crate::client::{Config, NewKeys};
-use crate::kex::dh::groups::DhGroup;
-use crate::kex::{KexAlgorithm, KexAlgorithmImplementor, KexCause, KexProgress, KEXES};
+use crate::kex::{Kex, KexAlgorithm, KexAlgorithmImplementor, KexCause, KexProgress, KEXES};
 use crate::negotiation::{Names, Select};
 use crate::session::Exchange;
 use crate::sshbuffer::PacketWriter;
@@ -28,11 +27,7 @@ thread_local! {
 #[allow(clippy::large_enum_variant)]
 enum ClientKexState {
     Created,
-    WaitingForGexReply {
-        names: Names,
-        kex: KexAlgorithm,
-    },
-    WaitingForDhReply {
+    WaitingForKexReply {
         // both KexInit and DH init sent
         names: Names,
         kex: KexAlgorithm,
@@ -58,11 +53,8 @@ impl Debug for ClientKex {
             ClientKexState::Created => {
                 s.field("state", &"created");
             }
-            ClientKexState::WaitingForGexReply { .. } => {
-                s.field("state", &"waiting for GEX response");
-            }
-            ClientKexState::WaitingForDhReply { .. } => {
-                s.field("state", &"waiting for DH response");
+            ClientKexState::WaitingForKexReply { .. } => {
+                s.field("state", &"waiting for a reply");
             }
             ClientKexState::WaitingForNewKeys { .. } => {
                 s.field("state", &"waiting for NEWKEYS");
@@ -87,15 +79,17 @@ impl ClientKex {
             state: ClientKexState::Created,
         }
     }
+}
 
-    pub fn kexinit(&mut self, output: &mut PacketWriter) -> Result<(), Error> {
+impl Kex for ClientKex {
+    fn kexinit(&mut self, output: &mut PacketWriter) -> Result<(), Error> {
         self.exchange.client_kex_init =
             negotiation::write_kex(&self.config.preferred, output, None)?;
 
         Ok(())
     }
 
-    pub fn step(
+    fn step(
         mut self,
         input: Option<&mut IncomingSshPacket>,
         output: &mut PacketWriter,
@@ -132,6 +126,11 @@ impl ClientKex {
 
                 let mut kex = KEXES.get(&names.kex).ok_or(Error::UnknownAlgo)?.make();
 
+                output.packet(|w| {
+                    kex.client_dh(&mut self.exchange.client_ephemeral, w)?;
+                    Ok(())
+                })?;
+
                 if kex.skip_exchange() {
                     // Non-standard no-kex exchange
                     let newkeys = compute_keys(
@@ -153,77 +152,14 @@ impl ClientKex {
                     });
                 }
 
-                if kex.is_dh_gex() {
-                    output.packet(|w| {
-                        kex.client_dh_gex_init(&self.config.gex, w)?;
-                        Ok(())
-                    })?;
-
-                    self.state = ClientKexState::WaitingForGexReply { names, kex };
-                } else {
-                    output.packet(|w| {
-                        kex.client_dh(&mut self.exchange.client_ephemeral, w)?;
-                        Ok(())
-                    })?;
-
-                    self.state = ClientKexState::WaitingForDhReply { names, kex };
-                }
+                self.state = ClientKexState::WaitingForKexReply { names, kex };
 
                 Ok(KexProgress::NeedsReply {
                     kex: self,
                     reset_seqn: false,
                 })
             }
-            ClientKexState::WaitingForGexReply { names, mut kex } => {
-                let Some(input) = input else {
-                    return Err(Error::KexInit);
-                };
-
-                if input.buffer.first() != Some(&msg::KEX_DH_GEX_GROUP) {
-                    error!(
-                        "Unexpected kex message at this stage: {:?}",
-                        input.buffer.first()
-                    );
-                    return Err(Error::KexInit);
-                }
-
-                #[allow(clippy::indexing_slicing)] // length checked
-                let mut r = &input.buffer[1..];
-
-                let prime = Mpint::decode(&mut r)?;
-                let gen = Mpint::decode(&mut r)?;
-                debug!("received gex group: prime={}, gen={}", prime, gen);
-
-                let group = DhGroup {
-                    prime: prime.as_bytes().to_vec().into(),
-                    generator: gen.as_bytes().to_vec().into(),
-                };
-
-                if group.bit_size() < self.config.gex.min_group_size
-                    || group.bit_size() > self.config.gex.max_group_size
-                {
-                    warn!(
-                        "DH prime size ({} bits) not within requested range",
-                        group.bit_size()
-                    );
-                    return Err(Error::KexInit);
-                }
-
-                let exchange = &mut self.exchange;
-                exchange.gex = Some((self.config.gex.clone(), group.clone()));
-                kex.dh_gex_set_group(group)?;
-                output.packet(|w| {
-                    kex.client_dh(&mut exchange.client_ephemeral, w)?;
-                    Ok(())
-                })?;
-                self.state = ClientKexState::WaitingForDhReply { names, kex };
-
-                Ok(KexProgress::NeedsReply {
-                    kex: self,
-                    reset_seqn: false,
-                })
-            }
-            ClientKexState::WaitingForDhReply { mut names, mut kex } => {
+            ClientKexState::WaitingForKexReply { mut names, mut kex } => {
                 // At this point, we've sent ECDH_INTI and
                 // are waiting for the ECDH_REPLY from the server.
 
@@ -235,19 +171,14 @@ impl ClientKex {
                     // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
                     debug!("ignoring guessed kex");
                     names.ignore_guessed = false;
-                    self.state = ClientKexState::WaitingForDhReply { names, kex };
+                    self.state = ClientKexState::WaitingForKexReply { names, kex };
                     return Ok(KexProgress::NeedsReply {
                         kex: self,
                         reset_seqn: false,
                     });
                 }
 
-                if input.buffer.first()
-                    != Some(match kex.is_dh_gex() {
-                        true => &msg::KEX_DH_GEX_REPLY,
-                        false => &msg::KEX_ECDH_REPLY,
-                    })
-                {
+                if input.buffer.first() != Some(&msg::KEX_ECDH_REPLY) {
                     error!(
                         "Unexpected kex message at this stage: {:?}",
                         input.buffer.first()

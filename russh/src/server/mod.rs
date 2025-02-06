@@ -37,10 +37,9 @@ use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use client::GexParams;
 use futures::future::Future;
 use log::{debug, error, info, warn};
-use msg::{is_kex_msg, validate_client_msg_strict_kex};
+use msg::is_kex_msg;
 use russh_keys::map_err;
 use russh_util::runtime::JoinHandle;
 use russh_util::time::Instant;
@@ -50,8 +49,7 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::pin;
 
 use crate::cipher::{clear, OpeningKey};
-use crate::kex::dh::groups::{DhGroup, BUILTIN_SAFE_DH_GROUPS, DH_GROUP14};
-use crate::kex::{KexProgress, SessionKexState};
+use crate::kex::{Kex, KexProgress, SessionKexState};
 use crate::session::*;
 use crate::ssh_read::*;
 use crate::sshbuffer::*;
@@ -729,46 +727,6 @@ pub trait Handler: Sized {
     ) -> Result<bool, Self::Error> {
         Ok(false)
     }
-
-    /// Override when enabling the `diffie-hellman-group-exchange-*` key exchange methods.
-    /// Should return a Diffie-Hellman group with a safe prime whose length is
-    /// between `gex_params.min_group_size` and `gex_params.max_group_size` and
-    /// (if possible) over and as close as possible to `gex_params.preferred_group_size`.
-    ///
-    /// OpenSSH uses a pre-generated database of safe primes stored in `/etc/ssh/moduli`
-    ///
-    /// The default implementation picks a group from a very short static list
-    /// of built-in standard groups and is not really taking advantage of the security
-    /// offered by these kex methods.
-    ///
-    /// See https://datatracker.ietf.org/doc/html/rfc4419#section-3
-    #[allow(unused_variables)]
-    async fn lookup_dh_gex_group(
-        &mut self,
-        gex_params: &GexParams,
-    ) -> Result<Option<DhGroup>, Self::Error> {
-        let mut best_group = &DH_GROUP14;
-
-        // Find _some_ matching group
-        for group in BUILTIN_SAFE_DH_GROUPS.iter() {
-            if group.bit_size() >= gex_params.min_group_size()
-                && group.bit_size() <= gex_params.max_group_size()
-            {
-                best_group = *group;
-                break;
-            }
-        }
-
-        // Find _closest_ matching group
-        for group in BUILTIN_SAFE_DH_GROUPS.iter() {
-            if group.bit_size() > gex_params.preferred_group_size() {
-                best_group = *group;
-                break;
-            }
-        }
-
-        Ok(Some(best_group.clone()))
-    }
 }
 
 #[async_trait]
@@ -976,6 +934,8 @@ async fn read_ssh_id<R: AsyncRead + Unpin>(
     Ok(session)
 }
 
+const STRICT_KEX_MSG_ORDER: &[u8] = &[msg::KEXINIT, msg::KEX_ECDH_INIT, msg::NEWKEYS];
+
 async fn reply<H: Handler + Send>(
     session: &mut Session,
     handler: &mut H,
@@ -989,7 +949,11 @@ async fn reply<H: Handler + Send>(
         );
         if session.common.strict_kex && session.common.encrypted.is_none() {
             let seqno = pkt.seqn.0 - 1; // was incremented after read()
-            validate_client_msg_strict_kex(*message_type, seqno as usize)?;
+            if let Some(expected) = STRICT_KEX_MSG_ORDER.get(seqno as usize) {
+                if message_type != expected {
+                    return Err(strict_kex_violation(*message_type, seqno as usize).into());
+                }
+            }
         }
 
         if [msg::IGNORE, msg::UNIMPLEMENTED, msg::DEBUG].contains(message_type) {
@@ -1008,9 +972,7 @@ async fn reply<H: Handler + Send>(
 
     if is_kex_msg {
         if let SessionKexState::InProgress(kex) = session.kex.take() {
-            let progress = kex
-                .step(Some(pkt), &mut session.common.packet_writer, handler)
-                .await?;
+            let progress = kex.step(Some(pkt), &mut session.common.packet_writer)?;
 
             match progress {
                 KexProgress::NeedsReply { kex, reset_seqn } => {
