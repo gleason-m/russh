@@ -4,7 +4,7 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 use log::debug;
 use ssh_encoding::{Decode, Encode, Reader};
-use ssh_key::{HashAlg, PrivateKey, PublicKey, Signature};
+use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
 use tokio;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -284,11 +284,10 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     pub async fn sign_request(
         &mut self,
         public: &PublicKey,
-        hash_alg: Option<HashAlg>,
         mut data: CryptoVec,
     ) -> Result<CryptoVec, Error> {
         debug!("sign_request: {:?}", data);
-        let hash = self.prepare_sign_request(public, hash_alg, &data)?;
+        let hash = self.prepare_sign_request(public, &data)?;
 
         self.read_response().await?;
 
@@ -308,7 +307,6 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     fn prepare_sign_request(
         &mut self,
         public: &ssh_key::PublicKey,
-        hash_alg: Option<HashAlg>,
         data: &[u8],
     ) -> Result<u32, Error> {
         self.buf.clear();
@@ -317,9 +315,14 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         public.key_data().encoded()?.encode(&mut self.buf)?;
         data.encode(&mut self.buf)?;
         debug!("public = {:?}", public);
-        let hash = match hash_alg {
-            Some(HashAlg::Sha256) => 2,
-            Some(HashAlg::Sha512) => 4,
+        let hash = match public.algorithm() {
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha256),
+            } => 2,
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha512),
+            } => 4,
+            Algorithm::Rsa { hash: None } => 0,
             _ => 0,
         };
         hash.encode(&mut self.buf)?;
@@ -349,11 +352,10 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     pub fn sign_request_base64(
         mut self,
         public: &ssh_key::PublicKey,
-        hash_alg: Option<HashAlg>,
         data: &[u8],
     ) -> impl futures::Future<Output = (Self, Result<String, Error>)> {
         debug!("sign_request: {:?}", data);
-        let r = self.prepare_sign_request(public, hash_alg, data);
+        let r = self.prepare_sign_request(public, data);
         async move {
             if let Err(e) = r {
                 return (self, Err(e));
@@ -378,12 +380,11 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     pub async fn sign_request_signature(
         &mut self,
         public: &ssh_key::PublicKey,
-        hash_alg: Option<HashAlg>,
         data: &[u8],
     ) -> Result<Signature, Error> {
         debug!("sign_request: {:?}", data);
 
-        self.prepare_sign_request(public, hash_alg, data)?;
+        self.prepare_sign_request(public, data)?;
         self.read_response().await?;
 
         match self.buf.split_first() {

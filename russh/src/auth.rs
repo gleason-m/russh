@@ -18,7 +18,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ssh_key::{Certificate, HashAlg, PrivateKey};
+use ssh_key::{Certificate, PrivateKey};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -154,7 +154,6 @@ pub trait Signer: Sized {
     async fn auth_publickey_sign(
         &mut self,
         key: &ssh_key::PublicKey,
-        hash_alg: Option<HashAlg>,
         to_sign: CryptoVec,
     ) -> Result<CryptoVec, Self::Error>;
 }
@@ -176,12 +175,9 @@ impl<R: AsyncRead + AsyncWrite + Unpin + Send + 'static> Signer
     async fn auth_publickey_sign(
         &mut self,
         key: &ssh_key::PublicKey,
-        hash_alg: Option<HashAlg>,
         to_sign: CryptoVec,
     ) -> Result<CryptoVec, Self::Error> {
-        self.sign_request(key, hash_alg, to_sign)
-            .await
-            .map_err(Into::into)
+        self.sign_request(key, to_sign).await.map_err(Into::into)
     }
 }
 
