@@ -1,13 +1,12 @@
 use std::cell::RefCell;
-use std::ops::DerefMut;
 
 use log::debug;
-use russh_keys::helpers::EncodedExt;
-use ssh_encoding::Encode;
+use russh_keys::add_signature;
 
 use super::*;
 use crate::cipher::SealingKey;
 use crate::kex::KEXES;
+use crate::keys::encoding::{Encoding, Reader};
 use crate::negotiation::Select;
 use crate::{msg, negotiation};
 
@@ -88,13 +87,9 @@ impl KexDh {
             Ok(Kex::Dh(self))
         } else {
             // Else, process it.
-            let Some((&msg::KEX_ECDH_INIT, mut r)) = buf.split_first() else {
-                return Err(Error::Inconsistent);
-            };
-
-            self.exchange
-                .client_ephemeral
-                .extend(&Bytes::decode(&mut r)?);
+            assert!(buf.first() == Some(&msg::KEX_ECDH_INIT));
+            let mut r = buf.reader(1);
+            self.exchange.client_ephemeral.extend(r.read_string()?);
 
             let mut kex = KEXES.get(&self.names.kex).ok_or(Error::UnknownAlgo)?.make();
 
@@ -116,10 +111,12 @@ impl KexDh {
                 debug!("server kexdhdone.exchange = {:?}", kexdhdone.exchange);
 
                 let mut pubkey_vec = CryptoVec::new();
-                config.keys[kexdhdone.key]
-                    .public_key()
-                    .to_bytes()?
-                    .encode(&mut pubkey_vec)?;
+                pubkey_vec.extend_ssh_string(
+                    config.keys[kexdhdone.key]
+                        .public_key()
+                        .to_bytes()?
+                        .as_slice(),
+                );
 
                 let hash = kexdhdone.kex.compute_exchange_hash(
                     &pubkey_vec,
@@ -129,24 +126,20 @@ impl KexDh {
                 debug!("exchange hash: {:?}", hash);
                 buffer.clear();
                 buffer.push(msg::KEX_ECDH_REPLY);
-                config.keys[kexdhdone.key]
-                    .public_key()
-                    .to_bytes()?
-                    .encode(buffer.deref_mut())?;
-
+                buffer.extend_ssh_string(
+                    config.keys[kexdhdone.key]
+                        .public_key()
+                        .to_bytes()?
+                        .as_slice(),
+                );
                 // Server ephemeral
-                kexdhdone
-                    .exchange
-                    .server_ephemeral
-                    .encode(buffer.deref_mut())?;
-
+                buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
                 // Hash signature
                 debug!("signing with key {:?}", kexdhdone.key);
                 debug!("hash: {:?}", hash);
                 debug!("key: {:?}", config.keys[kexdhdone.key]);
 
-                let signature = signature::Signer::try_sign(&config.keys[kexdhdone.key], &hash)?;
-                signature.encoded()?.encode(&mut *buffer)?;
+                add_signature(&config.keys[kexdhdone.key], &hash, &mut buffer)?;
 
                 cipher.write(&buffer, write_buffer);
                 cipher.write(&[msg::NEWKEYS], write_buffer);

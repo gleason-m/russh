@@ -25,11 +25,9 @@ use aes::{Aes128, Aes192, Aes256};
 use byteorder::{BigEndian, ByteOrder};
 use cbc::CbcWrapper;
 use ctr::Ctr128BE;
-use delegate::delegate;
 use des::TdesEde3;
 use log::debug;
 use once_cell::sync::Lazy;
-use ssh_encoding::Encode;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::mac::MacAlgorithm;
@@ -145,13 +143,6 @@ impl AsRef<str> for Name {
     }
 }
 
-impl Encode for Name {
-    delegate! { to self.as_ref() {
-        fn encoded_len(&self) -> Result<usize, ssh_encoding::Error>;
-        fn encode(&self, writer: &mut impl ssh_encoding::Writer) -> Result<(), ssh_encoding::Error>;
-    }}
-}
-
 impl Borrow<str> for &Name {
     fn borrow(&self) -> &str {
         self.0
@@ -218,8 +209,7 @@ pub(crate) trait SealingKey {
         // Maximum packet length:
         // https://tools.ietf.org/html/rfc4253#section-6.1
         assert!(packet_length <= u32::MAX as usize);
-        #[allow(clippy::unwrap_used)] // length checked
-        (packet_length as u32).encode(&mut buffer.buffer).unwrap();
+        buffer.buffer.push_u32_be(packet_length as u32);
 
         assert!(padding_length <= u8::MAX as usize);
         buffer.buffer.push(padding_length as u8);

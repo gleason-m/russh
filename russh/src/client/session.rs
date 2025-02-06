@@ -1,9 +1,8 @@
 use log::error;
-use russh_keys::map_err;
-use ssh_encoding::Encode;
 use tokio::sync::oneshot;
 
 use crate::client::Session;
+use crate::keys::encoding::Encoding;
 use crate::session::EncryptedState;
 use crate::{msg, ChannelId, CryptoVec, Disconnect, Pty, Sig};
 
@@ -14,7 +13,7 @@ impl Session {
         write_suffix: F,
     ) -> Result<ChannelId, crate::Error>
     where
-        F: FnOnce(&mut CryptoVec) -> Result<(), crate::Error>,
+        F: FnOnce(&mut CryptoVec),
     {
         let result = if let Some(ref mut enc) = self.common.encrypted {
             match enc.state {
@@ -24,27 +23,21 @@ impl Session {
                         self.common.config.maximum_packet_size,
                     );
                     push_packet!(enc.write, {
-                        msg::CHANNEL_OPEN.encode(&mut enc.write)?;
-                        kind.encode(&mut enc.write)?;
+                        enc.write.push(msg::CHANNEL_OPEN);
+                        enc.write.extend_ssh_string(kind);
 
                         // sender channel id.
-                        sender_channel.encode(&mut enc.write)?;
+                        enc.write.push_u32_be(sender_channel.0);
 
                         // window.
-                        self.common
-                            .config
-                            .as_ref()
-                            .window_size
-                            .encode(&mut enc.write)?;
+                        enc.write
+                            .push_u32_be(self.common.config.as_ref().window_size);
 
                         // max packet size.
-                        self.common
-                            .config
-                            .as_ref()
-                            .maximum_packet_size
-                            .encode(&mut enc.write)?;
+                        enc.write
+                            .push_u32_be(self.common.config.as_ref().maximum_packet_size);
 
-                        write_suffix(&mut enc.write)?;
+                        write_suffix(&mut enc.write);
                     });
                     sender_channel
                 }
@@ -57,7 +50,7 @@ impl Session {
     }
 
     pub fn channel_open_session(&mut self) -> Result<ChannelId, crate::Error> {
-        self.channel_open_generic(b"session", |_| Ok(()))
+        self.channel_open_generic(b"session", |_| ())
     }
 
     pub fn channel_open_x11(
@@ -66,9 +59,8 @@ impl Session {
         originator_port: u32,
     ) -> Result<ChannelId, crate::Error> {
         self.channel_open_generic(b"x11", |write| {
-            map_err!(originator_address.encode(write))?;
-            map_err!(originator_port.encode(write))?; // sender channel id.
-            Ok(())
+            write.extend_ssh_string(originator_address.as_bytes());
+            write.push_u32_be(originator_port); // sender channel id.
         })
     }
 
@@ -80,11 +72,10 @@ impl Session {
         originator_port: u32,
     ) -> Result<ChannelId, crate::Error> {
         self.channel_open_generic(b"direct-tcpip", |write| {
-            host_to_connect.encode(write)?;
-            port_to_connect.encode(write)?; // sender channel id.
-            originator_address.encode(write)?;
-            originator_port.encode(write)?; // sender channel id.
-            Ok(())
+            write.extend_ssh_string(host_to_connect.as_bytes());
+            write.push_u32_be(port_to_connect); // sender channel id.
+            write.extend_ssh_string(originator_address.as_bytes());
+            write.push_u32_be(originator_port); // sender channel id.
         })
     }
 
@@ -93,10 +84,9 @@ impl Session {
         socket_path: &str,
     ) -> Result<ChannelId, crate::Error> {
         self.channel_open_generic(b"direct-streamlocal@openssh.com", |write| {
-            socket_path.encode(write)?;
-            "".encode(write)?; // reserved
-            0u32.encode(write)?; // reserved
-            Ok(())
+            write.extend_ssh_string(socket_path.as_bytes());
+            write.extend_ssh_string("".as_bytes()); // reserved
+            write.push_u32_be(0); // reserved
         })
     }
 
@@ -111,33 +101,32 @@ impl Session {
         pix_width: u32,
         pix_height: u32,
         terminal_modes: &[(Pty, u32)],
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    map_err!(msg::CHANNEL_REQUEST.encode(&mut enc.write))?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "pty-req".encode(&mut enc.write)?;
-                    (want_reply as u8).encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"pty-req");
+                    enc.write.push(want_reply as u8);
 
-                    term.encode(&mut enc.write)?;
-                    col_width.encode(&mut enc.write)?;
-                    row_height.encode(&mut enc.write)?;
-                    pix_width.encode(&mut enc.write)?;
-                    pix_height.encode(&mut enc.write)?;
+                    enc.write.extend_ssh_string(term.as_bytes());
+                    enc.write.push_u32_be(col_width);
+                    enc.write.push_u32_be(row_height);
+                    enc.write.push_u32_be(pix_width);
+                    enc.write.push_u32_be(pix_height);
 
-                    ((1 + 5 * terminal_modes.len()) as u32).encode(&mut enc.write)?;
+                    enc.write.push_u32_be((1 + 5 * terminal_modes.len()) as u32);
                     for &(code, value) in terminal_modes {
-                        (code as u8).encode(&mut enc.write)?;
-                        value.encode(&mut enc.write)?;
+                        enc.write.push(code as u8);
+                        enc.write.push_u32_be(value)
                     }
                     // 0 code (to terminate the list)
-                    0u8.encode(&mut enc.write)?;
+                    enc.write.push(0);
                 });
             }
         }
-        Ok(())
     }
 
     pub fn request_x11(
@@ -148,23 +137,24 @@ impl Session {
         x11_authentication_protocol: &str,
         x11_authentication_cookie: &str,
         x11_screen_number: u32,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "x11-req".encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"x11-req");
                     enc.write.push(want_reply as u8);
                     enc.write.push(single_connection as u8);
-                    x11_authentication_protocol.encode(&mut enc.write)?;
-                    x11_authentication_cookie.encode(&mut enc.write)?;
-                    x11_screen_number.encode(&mut enc.write)?;
+                    enc.write
+                        .extend_ssh_string(x11_authentication_protocol.as_bytes());
+                    enc.write
+                        .extend_ssh_string(x11_authentication_cookie.as_bytes());
+                    enc.write.push_u32_be(x11_screen_number);
                 });
             }
         }
-        Ok(())
     }
 
     pub fn set_env(
@@ -173,99 +163,80 @@ impl Session {
         want_reply: bool,
         variable_name: &str,
         variable_value: &str,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "env".encode(&mut enc.write)?;
-                    (want_reply as u8).encode(&mut enc.write)?;
-                    variable_name.encode(&mut enc.write)?;
-                    variable_value.encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"env");
+                    enc.write.push(want_reply as u8);
+                    enc.write.extend_ssh_string(variable_name.as_bytes());
+                    enc.write.extend_ssh_string(variable_value.as_bytes());
                 });
             }
         }
-        Ok(())
     }
 
-    pub fn request_shell(
-        &mut self,
-        want_reply: bool,
-        channel: ChannelId,
-    ) -> Result<(), crate::Error> {
+    pub fn request_shell(&mut self, want_reply: bool, channel: ChannelId) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "shell".encode(&mut enc.write)?;
-                    (want_reply as u8).encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"shell");
+                    enc.write.push(want_reply as u8);
                 });
             }
         }
-        Ok(())
     }
 
-    pub fn exec(
-        &mut self,
-        channel: ChannelId,
-        want_reply: bool,
-        command: &[u8],
-    ) -> Result<(), crate::Error> {
+    pub fn exec(&mut self, channel: ChannelId, want_reply: bool, command: &[u8]) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "exec".encode(&mut enc.write)?;
-                    (want_reply as u8).encode(&mut enc.write)?;
-                    command.encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"exec");
+                    enc.write.push(want_reply as u8);
+                    enc.write.extend_ssh_string(command);
                 });
-                return Ok(());
+                return;
             }
         }
         error!("exec");
-        Ok(())
     }
 
-    pub fn signal(&mut self, channel: ChannelId, signal: Sig) -> Result<(), crate::Error> {
+    pub fn signal(&mut self, channel: ChannelId, signal: Sig) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "signal".encode(&mut enc.write)?;
-                    0u8.encode(&mut enc.write)?;
-                    signal.name().encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"signal");
+                    enc.write.push(0);
+                    enc.write.extend_ssh_string(signal.name().as_bytes());
                 });
             }
         }
-        Ok(())
     }
 
-    pub fn request_subsystem(
-        &mut self,
-        want_reply: bool,
-        channel: ChannelId,
-        name: &str,
-    ) -> Result<(), crate::Error> {
+    pub fn request_subsystem(&mut self, want_reply: bool, channel: ChannelId, name: &str) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "subsystem".encode(&mut enc.write)?;
-                    (want_reply as u8).encode(&mut enc.write)?;
-                    name.encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"subsystem");
+                    enc.write.push(want_reply as u8);
+                    enc.write.extend_ssh_string(name.as_bytes());
                 });
             }
         }
-        Ok(())
     }
 
     pub fn window_change(
@@ -275,23 +246,22 @@ impl Session {
         row_height: u32,
         pix_width: u32,
         pix_height: u32,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
 
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "window-change".encode(&mut enc.write)?;
-                    0u8.encode(&mut enc.write)?;
-                    col_width.encode(&mut enc.write)?;
-                    row_height.encode(&mut enc.write)?;
-                    pix_width.encode(&mut enc.write)?;
-                    pix_height.encode(&mut enc.write)?;
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"window-change");
+                    enc.write.push(0); // this packet never wants reply
+                    enc.write.push_u32_be(col_width);
+                    enc.write.push_u32_be(row_height);
+                    enc.write.push_u32_be(pix_width);
+                    enc.write.push_u32_be(pix_height);
                 });
             }
         }
-        Ok(())
     }
 
     /// Requests a TCP/IP forwarding from the server
@@ -303,7 +273,7 @@ impl Session {
         reply_channel: Option<oneshot::Sender<Option<u32>>>,
         address: &str,
         port: u32,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
@@ -312,14 +282,13 @@ impl Session {
                 );
             }
             push_packet!(enc.write, {
-                msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
-                "tcpip-forward".encode(&mut enc.write)?;
-                (want_reply as u8).encode(&mut enc.write)?;
-                address.encode(&mut enc.write)?;
-                port.encode(&mut enc.write)?;
+                enc.write.push(msg::GLOBAL_REQUEST);
+                enc.write.extend_ssh_string(b"tcpip-forward");
+                enc.write.push(want_reply as u8);
+                enc.write.extend_ssh_string(address.as_bytes());
+                enc.write.push_u32_be(port);
             });
         }
-        Ok(())
     }
 
     /// Requests cancellation of TCP/IP forwarding from the server
@@ -331,7 +300,7 @@ impl Session {
         reply_channel: Option<oneshot::Sender<bool>>,
         address: &str,
         port: u32,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
@@ -340,14 +309,13 @@ impl Session {
                 );
             }
             push_packet!(enc.write, {
-                msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
-                "cancel-tcpip-forward".encode(&mut enc.write)?;
-                (want_reply as u8).encode(&mut enc.write)?;
-                address.encode(&mut enc.write)?;
-                port.encode(&mut enc.write)?;
+                enc.write.push(msg::GLOBAL_REQUEST);
+                enc.write.extend_ssh_string(b"cancel-tcpip-forward");
+                enc.write.push(want_reply as u8);
+                enc.write.extend_ssh_string(address.as_bytes());
+                enc.write.push_u32_be(port);
             });
         }
-        Ok(())
     }
 
     /// Requests a UDS forwarding from the server, `socket path` being the server side socket path.
@@ -358,7 +326,7 @@ impl Session {
         &mut self,
         reply_channel: Option<oneshot::Sender<bool>>,
         socket_path: &str,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
@@ -367,13 +335,13 @@ impl Session {
                 );
             }
             push_packet!(enc.write, {
-                msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
-                "streamlocal-forward@openssh.com".encode(&mut enc.write)?;
-                (want_reply as u8).encode(&mut enc.write)?;
-                socket_path.encode(&mut enc.write)?;
+                enc.write.push(msg::GLOBAL_REQUEST);
+                enc.write
+                    .extend_ssh_string(b"streamlocal-forward@openssh.com");
+                enc.write.push(want_reply as u8);
+                enc.write.extend_ssh_string(socket_path.as_bytes());
             });
         }
-        Ok(())
     }
 
     /// Requests cancellation of UDS forwarding from the server
@@ -384,7 +352,7 @@ impl Session {
         &mut self,
         reply_channel: Option<oneshot::Sender<bool>>,
         socket_path: &str,
-    ) -> Result<(), crate::Error> {
+    ) {
         if let Some(ref mut enc) = self.common.encrypted {
             let want_reply = reply_channel.is_some();
             if let Some(reply_channel) = reply_channel {
@@ -393,29 +361,28 @@ impl Session {
                 );
             }
             push_packet!(enc.write, {
-                msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
-                "cancel-streamlocal-forward@openssh.com".encode(&mut enc.write)?;
-                (want_reply as u8).encode(&mut enc.write)?;
-                socket_path.encode(&mut enc.write)?;
+                enc.write.push(msg::GLOBAL_REQUEST);
+                enc.write
+                    .extend_ssh_string(b"cancel-streamlocal-forward@openssh.com");
+                enc.write.push(want_reply as u8);
+                enc.write.extend_ssh_string(socket_path.as_bytes());
             });
         }
-        Ok(())
     }
 
-    pub fn send_keepalive(&mut self, want_reply: bool) -> Result<(), crate::Error> {
+    pub fn send_keepalive(&mut self, want_reply: bool) {
         self.open_global_requests
             .push_back(crate::session::GlobalRequestResponse::Keepalive);
         if let Some(ref mut enc) = self.common.encrypted {
             push_packet!(enc.write, {
-                msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
-                "keepalive@openssh.com".encode(&mut enc.write)?;
-                (want_reply as u8).encode(&mut enc.write)?;
+                enc.write.push(msg::GLOBAL_REQUEST);
+                enc.write.extend_ssh_string(b"keepalive@openssh.com");
+                enc.write.push(want_reply as u8);
             });
         }
-        Ok(())
     }
 
-    pub fn data(&mut self, channel: ChannelId, data: CryptoVec) -> Result<(), crate::Error> {
+    pub fn data(&mut self, channel: ChannelId, data: CryptoVec) {
         if let Some(ref mut enc) = self.common.encrypted {
             enc.data(channel, data)
         } else {
@@ -423,7 +390,7 @@ impl Session {
         }
     }
 
-    pub fn eof(&mut self, channel: ChannelId) -> Result<(), crate::Error> {
+    pub fn eof(&mut self, channel: ChannelId) {
         if let Some(ref mut enc) = self.common.encrypted {
             enc.eof(channel)
         } else {
@@ -431,7 +398,7 @@ impl Session {
         }
     }
 
-    pub fn close(&mut self, channel: ChannelId) -> Result<(), crate::Error> {
+    pub fn close(&mut self, channel: ChannelId) {
         if let Some(ref mut enc) = self.common.encrypted {
             enc.close(channel)
         } else {
@@ -439,12 +406,7 @@ impl Session {
         }
     }
 
-    pub fn extended_data(
-        &mut self,
-        channel: ChannelId,
-        ext: u32,
-        data: CryptoVec,
-    ) -> Result<(), crate::Error> {
+    pub fn extended_data(&mut self, channel: ChannelId, ext: u32, data: CryptoVec) {
         if let Some(ref mut enc) = self.common.encrypted {
             enc.extended_data(channel, ext, data)
         } else {
@@ -452,31 +414,21 @@ impl Session {
         }
     }
 
-    pub fn agent_forward(
-        &mut self,
-        channel: ChannelId,
-        want_reply: bool,
-    ) -> Result<(), crate::Error> {
+    pub fn agent_forward(&mut self, channel: ChannelId, want_reply: bool) {
         if let Some(ref mut enc) = self.common.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
-                    msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
-                    channel.recipient_channel.encode(&mut enc.write)?;
-                    "auth-agent-req@openssh.com".encode(&mut enc.write)?;
-                    (want_reply as u8).encode(&mut enc.write)?;
+                    enc.write.push(msg::CHANNEL_REQUEST);
+                    enc.write.push_u32_be(channel.recipient_channel);
+                    enc.write.extend_ssh_string(b"auth-agent-req@openssh.com");
+                    enc.write.push(want_reply as u8);
                 });
             }
         }
-        Ok(())
     }
 
-    pub fn disconnect(
-        &mut self,
-        reason: Disconnect,
-        description: &str,
-        language_tag: &str,
-    ) -> Result<(), crate::Error> {
-        self.common.disconnect(reason, description, language_tag)
+    pub fn disconnect(&mut self, reason: Disconnect, description: &str, language_tag: &str) {
+        self.common.disconnect(reason, description, language_tag);
     }
 
     pub fn has_pending_data(&self, channel: ChannelId) -> bool {

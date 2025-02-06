@@ -1,4 +1,4 @@
-name: Semver check
+name: Rust
 
 on:
   push:
@@ -21,6 +21,5 @@ jobs:
 
     - name: Check semver compatibility (russh)
       uses: obi1kenobi/cargo-semver-checks-action@v2
-      continue-on-error: true
       with:
         package: russh

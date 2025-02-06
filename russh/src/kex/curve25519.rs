@@ -3,10 +3,9 @@ use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use curve25519_dalek::scalar::Scalar;
 use log::debug;
-use ssh_encoding::Encode;
 
 use super::{compute_keys, KexAlgorithm, KexType};
-use crate::kex::encode_mpint;
+use crate::keys::encoding::Encoding;
 use crate::mac::{self};
 use crate::session::Exchange;
 use crate::{cipher, msg, CryptoVec};
@@ -95,8 +94,8 @@ impl KexAlgorithm for Curve25519Kex {
         client_ephemeral.clear();
         client_ephemeral.extend(&client_pubkey.0);
 
-        msg::KEX_ECDH_INIT.encode(buf)?;
-        client_pubkey.0.encode(buf)?;
+        buf.push(msg::KEX_ECDH_INIT);
+        buf.extend_ssh_string(&client_pubkey.0);
 
         self.local_secret = Some(client_secret);
         Ok(())
@@ -119,17 +118,17 @@ impl KexAlgorithm for Curve25519Kex {
     ) -> Result<CryptoVec, crate::Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         buffer.clear();
-        exchange.client_id.encode(buffer)?;
-        exchange.server_id.encode(buffer)?;
-        exchange.client_kex_init.encode(buffer)?;
-        exchange.server_kex_init.encode(buffer)?;
+        buffer.extend_ssh_string(&exchange.client_id);
+        buffer.extend_ssh_string(&exchange.server_id);
+        buffer.extend_ssh_string(&exchange.client_kex_init);
+        buffer.extend_ssh_string(&exchange.server_kex_init);
 
         buffer.extend(key);
-        exchange.client_ephemeral.encode(buffer)?;
-        exchange.server_ephemeral.encode(buffer)?;
+        buffer.extend_ssh_string(&exchange.client_ephemeral);
+        buffer.extend_ssh_string(&exchange.server_ephemeral);
 
         if let Some(ref shared) = self.shared_secret {
-            encode_mpint(&shared.0, buffer)?;
+            buffer.extend_ssh_mpint(&shared.0);
         }
 
         use sha2::Digest;

@@ -36,10 +36,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::future::Future;
 use log::{debug, error};
-use russh_keys::map_err;
 use russh_util::runtime::JoinHandle;
 use ssh_key::{Certificate, PrivateKey};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -123,12 +121,21 @@ impl Default for Config {
 /// A client's response in a challenge-response authentication.
 ///
 /// You should iterate it to get `&[u8]` response slices.
-pub struct Response<'a>(&'a mut (dyn Iterator<Item = Option<Bytes>> + Send));
+#[derive(Debug)]
+pub struct Response<'a> {
+    pos: russh_keys::encoding::Position<'a>,
+    n: u32,
+}
 
-impl Iterator for Response<'_> {
-    type Item = Bytes;
+impl<'a> Iterator for Response<'a> {
+    type Item = &'a [u8];
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().flatten()
+        if self.n == 0 {
+            None
+        } else {
+            self.n -= 1;
+            self.pos.read_string().ok()
+        }
     }
 }
 
@@ -688,7 +695,10 @@ where
     // Writing SSH id.
     let mut write_buffer = SSHBuffer::new();
     write_buffer.send_ssh_id(&config.as_ref().server_id);
-    map_err!(stream.write_all(&write_buffer.buffer[..]).await)?;
+    stream
+        .write_all(&write_buffer.buffer[..])
+        .await
+        .map_err(crate::Error::from)?;
 
     // Reading SSH id and allocating a session.
     let mut stream = SshRead::new(stream);
@@ -834,7 +844,7 @@ async fn reply<H: Handler + Send>(
                     },
                     newkeys,
                 );
-                session.maybe_send_ext_info()?;
+                session.maybe_send_ext_info();
                 if session.common.strict_kex {
                     *seqn = Wrapping(0);
                 }
