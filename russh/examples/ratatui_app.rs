@@ -7,11 +7,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::{Terminal, TerminalOptions, Viewport};
+use ratatui::Terminal;
 use russh::keys::ssh_key::PublicKey;
 use russh::server::*;
-use russh::{Channel, ChannelId, Pty};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use russh::{Channel, ChannelId};
 use tokio::sync::Mutex;
 
 type SshTerminal = Terminal<CrosstermBackend<TerminalHandle>>;
@@ -26,28 +25,12 @@ impl App {
     }
 }
 
+#[derive(Clone)]
 struct TerminalHandle {
-    sender: UnboundedSender<Vec<u8>>,
-    // The sink collects the data which is finally sent to sender.
+    handle: Handle,
+    // The sink collects the data which is finally flushed to the handle.
     sink: Vec<u8>,
-}
-
-impl TerminalHandle {
-    async fn start(handle: Handle, channel_id: ChannelId) -> Self {
-        let (sender, mut receiver) = unbounded_channel::<Vec<u8>>();
-        tokio::spawn(async move {
-            while let Some(data) = receiver.recv().await {
-                let result = handle.data(channel_id, data.into()).await;
-                if result.is_err() {
-                    eprintln!("Failed to send data: {:?}", result);
-                }
-            }
-        });
-        Self {
-            sender,
-            sink: Vec::new(),
-        }
-    }
+    channel_id: ChannelId,
 }
 
 // The crossterm backend writes to the terminal handle.
@@ -58,13 +41,15 @@ impl std::io::Write for TerminalHandle {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let result = self.sender.send(self.sink.clone());
-        if result.is_err() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                result.unwrap_err(),
-            ));
-        }
+        let handle = self.handle.clone();
+        let channel_id = self.channel_id;
+        let data = self.sink.clone().into();
+        futures::executor::block_on(async move {
+            let result = handle.data(channel_id, data).await;
+            if result.is_err() {
+                eprintln!("Failed to send data: {:?}", result);
+            }
+        });
 
         self.sink.clear();
         Ok(())
@@ -96,8 +81,8 @@ impl AppServer {
 
                     terminal
                         .draw(|f| {
-                            let area = f.area();
-                            f.render_widget(Clear, area);
+                            let size = f.size();
+                            f.render_widget(Clear, size);
                             let style = match app.counter % 3 {
                                 0 => Style::default().fg(Color::Red),
                                 1 => Style::default().fg(Color::Green),
@@ -109,7 +94,7 @@ impl AppServer {
                             let block = Block::default()
                                 .title("Press 'c' to reset the counter!")
                                 .borders(Borders::ALL);
-                            f.render_widget(paragraph.block(block), area);
+                            f.render_widget(paragraph.block(block), size);
                         })
                         .unwrap();
                 }
@@ -150,20 +135,20 @@ impl Handler for AppServer {
         channel: Channel<Msg>,
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        let terminal_handle = TerminalHandle::start(session.handle(), channel.id()).await;
+        {
+            let mut clients = self.clients.lock().await;
+            let terminal_handle = TerminalHandle {
+                handle: session.handle(),
+                sink: Vec::new(),
+                channel_id: channel.id(),
+            };
 
-        let backend = CrosstermBackend::new(terminal_handle);
+            let backend = CrosstermBackend::new(terminal_handle.clone());
+            let terminal = Terminal::new(backend)?;
+            let app = App::new();
 
-        // the correct viewport area will be set when the client request a pty
-        let options = TerminalOptions {
-            viewport: Viewport::Fixed(Rect::default()),
-        };
-
-        let terminal = Terminal::with_options(backend, options)?;
-        let app = App::new();
-
-        let mut clients = self.clients.lock().await;
-        clients.insert(self.id, (terminal, app));
+            clients.insert(self.id, (terminal, app));
+        }
 
         Ok(true)
     }
@@ -207,48 +192,17 @@ impl Handler for AppServer {
         _: u32,
         _: &mut Session,
     ) -> Result<(), Self::Error> {
-        let rect = Rect {
-            x: 0,
-            y: 0,
-            width: col_width as u16,
-            height: row_height as u16,
-        };
-
-        let mut clients = self.clients.lock().await;
-        let (terminal, _) = clients.get_mut(&self.id).unwrap();
-        terminal.resize(rect)?;
-
-        Ok(())
-    }
-
-    /// The client requests a pseudo-terminal with the given
-    /// specifications.
-    ///
-    /// **Note:** Success or failure should be communicated to the client by calling
-    /// `session.channel_success(channel)` or `session.channel_failure(channel)` respectively.
-    async fn pty_request(
-        &mut self,
-        channel: ChannelId,
-        _: &str,
-        col_width: u32,
-        row_height: u32,
-        _: u32,
-        _: u32,
-        _: &[(Pty, u32)],
-        session: &mut Session,
-    ) -> Result<(), Self::Error> {
-        let rect = Rect {
-            x: 0,
-            y: 0,
-            width: col_width as u16,
-            height: row_height as u16,
-        };
-
-        let mut clients = self.clients.lock().await;
-        let (terminal, _) = clients.get_mut(&self.id).unwrap();
-        terminal.resize(rect)?;
-
-        session.channel_success(channel)?;
+        {
+            let mut clients = self.clients.lock().await;
+            let (terminal, _) = clients.get_mut(&self.id).unwrap();
+            let rect = Rect {
+                x: 0,
+                y: 0,
+                width: col_width as u16,
+                height: row_height as u16,
+            };
+            terminal.resize(rect)?;
+        }
 
         Ok(())
     }
