@@ -1,5 +1,4 @@
-// mod gex;
-pub(crate) mod groups;
+mod groups;
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -9,42 +8,40 @@ use log::debug;
 use num_bigint::BigUint;
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
-use ssh_encoding::{Encode, Writer};
+use ssh_encoding::Encode;
 
 use self::groups::{DhGroup, DH_GROUP1, DH_GROUP14, DH_GROUP16};
-use super::{compute_keys, KexAlgorithm, KexAlgorithmImplementor, KexType};
+use super::{compute_keys, KexAlgorithm, KexType};
 use crate::session::Exchange;
 use crate::{cipher, mac, msg, CryptoVec};
 
 pub struct DhGroup1Sha1KexType {}
 
 impl KexType for DhGroup1Sha1KexType {
-    fn make(&self) -> KexAlgorithm {
-        DhGroupKex::<Sha1>::new(&DH_GROUP1).into()
+    fn make(&self) -> Box<dyn KexAlgorithm + Send> {
+        Box::new(DhGroupKex::<Sha1>::new(&DH_GROUP1)) as Box<dyn KexAlgorithm + Send>
     }
 }
-
 pub struct DhGroup14Sha1KexType {}
 
 impl KexType for DhGroup14Sha1KexType {
-    fn make(&self) -> KexAlgorithm {
-        DhGroupKex::<Sha1>::new(&DH_GROUP14).into()
+    fn make(&self) -> Box<dyn KexAlgorithm + Send> {
+        Box::new(DhGroupKex::<Sha1>::new(&DH_GROUP14)) as Box<dyn KexAlgorithm + Send>
     }
 }
-
 pub struct DhGroup14Sha256KexType {}
 
 impl KexType for DhGroup14Sha256KexType {
-    fn make(&self) -> KexAlgorithm {
-        DhGroupKex::<Sha256>::new(&DH_GROUP14).into()
+    fn make(&self) -> Box<dyn KexAlgorithm + Send> {
+        Box::new(DhGroupKex::<Sha256>::new(&DH_GROUP14)) as Box<dyn KexAlgorithm + Send>
     }
 }
 
 pub struct DhGroup16Sha512KexType {}
 
 impl KexType for DhGroup16Sha512KexType {
-    fn make(&self) -> KexAlgorithm {
-        DhGroupKex::<Sha512>::new(&DH_GROUP16).into()
+    fn make(&self) -> Box<dyn KexAlgorithm + Send> {
+        Box::new(DhGroupKex::<Sha512>::new(&DH_GROUP16)) as Box<dyn KexAlgorithm + Send>
     }
 }
 
@@ -87,7 +84,7 @@ fn biguint_to_mpint(biguint: &BigUint) -> Vec<u8> {
     mpint
 }
 
-impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
+impl<D: Digest> KexAlgorithm for DhGroupKex<D> {
     fn skip_exchange(&self) -> bool {
         false
     }
@@ -144,7 +141,7 @@ impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
     fn client_dh(
         &mut self,
         client_ephemeral: &mut CryptoVec,
-        writer: &mut impl Writer,
+        buf: &mut CryptoVec,
     ) -> Result<(), crate::Error> {
         self.dh.generate_private_key(false);
         let client_pubkey = &self.dh.generate_public_key();
@@ -158,8 +155,8 @@ impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
         client_ephemeral.clear();
         client_ephemeral.extend(&encoded_pubkey);
 
-        msg::KEX_ECDH_INIT.encode(writer)?;
-        encoded_pubkey.encode(writer)?;
+        msg::KEX_ECDH_INIT.encode(buf)?;
+        encoded_pubkey.encode(buf)?;
 
         Ok(())
     }

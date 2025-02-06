@@ -1,20 +1,17 @@
-use ssh_encoding::Writer;
-
-use super::{KexAlgorithm, KexAlgorithmImplementor, KexType};
+use super::{KexAlgorithm, KexType};
 use crate::CryptoVec;
 
 pub struct NoneKexType {}
 
 impl KexType for NoneKexType {
-    fn make(&self) -> KexAlgorithm {
-        NoneKexAlgorithm {}.into()
+    fn make(&self) -> Box<dyn KexAlgorithm + Send> {
+        Box::new(NoneKexAlgorithm {}) as Box<dyn KexAlgorithm + Send>
     }
 }
 
-#[doc(hidden)]
-pub struct NoneKexAlgorithm {}
+struct NoneKexAlgorithm {}
 
-impl KexAlgorithmImplementor for NoneKexAlgorithm {
+impl KexAlgorithm for NoneKexAlgorithm {
     fn skip_exchange(&self) -> bool {
         true
     }
@@ -30,7 +27,7 @@ impl KexAlgorithmImplementor for NoneKexAlgorithm {
     fn client_dh(
         &mut self,
         _client_ephemeral: &mut russh_cryptovec::CryptoVec,
-        _buf: &mut impl Writer,
+        _buf: &mut russh_cryptovec::CryptoVec,
     ) -> Result<(), crate::Error> {
         Ok(())
     }

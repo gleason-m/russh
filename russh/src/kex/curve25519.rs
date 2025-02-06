@@ -3,9 +3,9 @@ use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use curve25519_dalek::scalar::Scalar;
 use log::debug;
-use ssh_encoding::{Encode, Writer};
+use ssh_encoding::Encode;
 
-use super::{compute_keys, KexAlgorithm, KexAlgorithmImplementor, KexType};
+use super::{compute_keys, KexAlgorithm, KexType};
 use crate::kex::encode_mpint;
 use crate::mac::{self};
 use crate::session::Exchange;
@@ -14,12 +14,11 @@ use crate::{cipher, msg, CryptoVec};
 pub struct Curve25519KexType {}
 
 impl KexType for Curve25519KexType {
-    fn make(&self) -> KexAlgorithm {
-        Curve25519Kex {
+    fn make(&self) -> Box<dyn KexAlgorithm + Send> {
+        Box::new(Curve25519Kex {
             local_secret: None,
             shared_secret: None,
-        }
-        .into()
+        }) as Box<dyn KexAlgorithm + Send>
     }
 }
 
@@ -41,7 +40,7 @@ impl std::fmt::Debug for Curve25519Kex {
 // We used to support curve "NIST P-256" here, but the security of
 // that curve is controversial, see
 // http://safecurves.cr.yp.to/rigid.html
-impl KexAlgorithmImplementor for Curve25519Kex {
+impl KexAlgorithm for Curve25519Kex {
     fn skip_exchange(&self) -> bool {
         false
     }
@@ -87,7 +86,7 @@ impl KexAlgorithmImplementor for Curve25519Kex {
     fn client_dh(
         &mut self,
         client_ephemeral: &mut CryptoVec,
-        writer: &mut impl Writer,
+        buf: &mut CryptoVec,
     ) -> Result<(), crate::Error> {
         let client_secret = Scalar::from_bytes_mod_order(rand::random::<[u8; 32]>());
         let client_pubkey = (ED25519_BASEPOINT_TABLE * &client_secret).to_montgomery();
@@ -96,8 +95,8 @@ impl KexAlgorithmImplementor for Curve25519Kex {
         client_ephemeral.clear();
         client_ephemeral.extend(&client_pubkey.0);
 
-        msg::KEX_ECDH_INIT.encode(writer)?;
-        client_pubkey.0.encode(writer)?;
+        msg::KEX_ECDH_INIT.encode(buf)?;
+        client_pubkey.0.encode(buf)?;
 
         self.local_secret = Some(client_secret);
         Ok(())

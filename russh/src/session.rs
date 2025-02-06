@@ -15,7 +15,6 @@
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::mem::replace;
 use std::num::Wrapping;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -23,9 +22,9 @@ use log::{debug, trace};
 use ssh_encoding::Encode;
 use tokio::sync::oneshot;
 
-use crate::cipher::OpeningKey;
-use crate::kex::{KexAlgorithm, KexAlgorithmImplementor};
-use crate::sshbuffer::PacketWriter;
+use crate::cipher::SealingKey;
+use crate::kex::KexAlgorithm;
+use crate::sshbuffer::SSHBuffer;
 use crate::{
     auth, cipher, mac, msg, negotiation, ChannelId, ChannelParams, CryptoVec, Disconnect, Limits,
 };
@@ -36,11 +35,12 @@ pub(crate) struct Encrypted {
 
     // It's always Some, except when we std::mem::replace it temporarily.
     pub exchange: Option<Exchange>,
-    pub kex: KexAlgorithm,
+    pub kex: Box<dyn KexAlgorithm + Send>,
     pub key: usize,
     pub client_mac: mac::Name,
     pub server_mac: mac::Name,
     pub session_id: CryptoVec,
+    pub rekey: Option<Kex>,
     pub channels: HashMap<ChannelId, ChannelParams>,
     pub last_channel_id: Wrapping<u32>,
     pub write: CryptoVec,
@@ -48,10 +48,12 @@ pub(crate) struct Encrypted {
     pub last_rekey: russh_util::time::Instant,
     pub server_compression: crate::compression::Compression,
     pub client_compression: crate::compression::Compression,
+    pub compress: crate::compression::Compress,
     pub decompress: crate::compression::Decompress,
-    pub rekey_wanted: bool,
+    pub compress_buffer: CryptoVec,
 }
 
+#[derive(Debug)]
 pub(crate) struct CommonSession<Config> {
     pub auth_user: String,
     pub remote_sshid: Vec<u8>,
@@ -60,33 +62,15 @@ pub(crate) struct CommonSession<Config> {
     pub auth_method: Option<auth::Method>,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) auth_attempts: usize,
-    pub packet_writer: PacketWriter,
-    pub remote_to_local: Box<dyn OpeningKey + Send>,
+    pub write_buffer: SSHBuffer,
+    pub kex: Option<Kex>,
+    pub cipher: cipher::CipherPair,
     pub wants_reply: bool,
     pub disconnected: bool,
     pub buffer: CryptoVec,
     pub strict_kex: bool,
     pub alive_timeouts: usize,
     pub received_data: bool,
-}
-
-impl<C> Debug for CommonSession<C> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CommonSession")
-            .field("auth_user", &self.auth_user)
-            .field("remote_sshid", &self.remote_sshid)
-            .field("encrypted", &self.encrypted)
-            .field("auth_method", &self.auth_method)
-            .field("auth_attempts", &self.auth_attempts)
-            .field("packet_writer", &self.packet_writer)
-            .field("wants_reply", &self.wants_reply)
-            .field("disconnected", &self.disconnected)
-            .field("buffer", &self.buffer)
-            .field("strict_kex", &self.strict_kex)
-            .field("alive_timeouts", &self.alive_timeouts)
-            .field("received_data", &self.received_data)
-            .finish()
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -124,9 +108,7 @@ impl<C> CommonSession<C> {
             enc.key = newkeys.key;
             enc.client_mac = newkeys.names.client_mac;
             enc.server_mac = newkeys.names.server_mac;
-            self.remote_to_local = newkeys.cipher.remote_to_local;
-            self.packet_writer
-                .set_cipher(newkeys.cipher.local_to_remote);
+            self.cipher = newkeys.cipher;
             self.strict_kex = self.strict_kex || newkeys.names.strict_kex;
         }
     }
@@ -140,6 +122,7 @@ impl<C> CommonSession<C> {
             server_mac: newkeys.names.server_mac,
             session_id: newkeys.session_id,
             state,
+            rekey: None,
             channels: HashMap::new(),
             last_channel_id: Wrapping(1),
             write: CryptoVec::new(),
@@ -147,12 +130,11 @@ impl<C> CommonSession<C> {
             last_rekey: russh_util::time::Instant::now(),
             server_compression: newkeys.names.server_compression,
             client_compression: newkeys.names.client_compression,
+            compress: crate::compression::Compress::None,
+            compress_buffer: CryptoVec::new(),
             decompress: crate::compression::Decompress::None,
-            rekey_wanted: false,
         });
-        self.remote_to_local = newkeys.cipher.remote_to_local;
-        self.packet_writer
-            .set_cipher(newkeys.cipher.local_to_remote);
+        self.cipher = newkeys.cipher;
         self.strict_kex = newkeys.names.strict_kex;
     }
 
@@ -177,7 +159,7 @@ impl<C> CommonSession<C> {
             return if let Some(ref mut enc) = self.encrypted {
                 disconnect(&mut enc.write)
             } else {
-                disconnect(&mut self.packet_writer.buffer().buffer)
+                disconnect(&mut self.write_buffer.buffer)
             };
         }
         Ok(())
@@ -192,8 +174,10 @@ impl<C> CommonSession<C> {
         Ok(())
     }
 
-    pub(crate) fn reset_seqn(&mut self) {
-        self.packet_writer.reset_seqn();
+    pub(crate) fn maybe_reset_seqn(&mut self) {
+        if self.strict_kex {
+            self.write_buffer.seqn = Wrapping(0);
+        }
     }
 }
 
@@ -399,15 +383,10 @@ impl Encrypted {
         Ok(buf_len)
     }
 
-    pub fn data(
-        &mut self,
-        channel: ChannelId,
-        buf0: CryptoVec,
-        is_rekeying: bool,
-    ) -> Result<(), crate::Error> {
+    pub fn data(&mut self, channel: ChannelId, buf0: CryptoVec) -> Result<(), crate::Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
             assert!(channel.confirmed);
-            if !channel.pending_data.is_empty() && is_rekeying {
+            if !channel.pending_data.is_empty() || self.rekey.is_some() {
                 channel.pending_data.push_back((buf0, None, 0));
                 return Ok(());
             }
@@ -426,11 +405,10 @@ impl Encrypted {
         channel: ChannelId,
         ext: u32,
         buf0: CryptoVec,
-        is_rekeying: bool,
     ) -> Result<(), crate::Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
             assert!(channel.confirmed);
-            if !channel.pending_data.is_empty() && is_rekeying {
+            if !channel.pending_data.is_empty() {
                 channel.pending_data.push_back((buf0, Some(ext), 0));
                 return Ok(());
             }
@@ -445,7 +423,8 @@ impl Encrypted {
     pub fn flush(
         &mut self,
         limits: &Limits,
-        writer: &mut PacketWriter,
+        cipher: &mut dyn SealingKey,
+        write_buffer: &mut SSHBuffer,
     ) -> Result<bool, crate::Error> {
         // If there are pending packets (and we've not started to rekey), flush them.
         {
@@ -455,9 +434,12 @@ impl Encrypted {
                 let len = BigEndian::read_u32(&self.write[self.write_cursor..]) as usize;
                 #[allow(clippy::indexing_slicing)]
                 let to_write = &self.write[(self.write_cursor + 4)..(self.write_cursor + 4 + len)];
-                trace!("session_write_encrypted, buf = {:?}", to_write);
-
-                writer.packet_raw(to_write)?;
+                trace!("server_write_encrypted, buf = {:?}", to_write);
+                #[allow(clippy::indexing_slicing)]
+                let packet = self
+                    .compress
+                    .compress(to_write, &mut self.compress_buffer)?;
+                cipher.write(packet, write_buffer);
                 self.write_cursor += 4 + len
             }
         }
@@ -473,11 +455,8 @@ impl Encrypted {
 
         let now = russh_util::time::Instant::now();
         let dur = now.duration_since(self.last_rekey);
-        Ok(replace(&mut self.rekey_wanted, false)
-            || writer.buffer().bytes >= limits.rekey_write_limit
-            || dur >= limits.rekey_time_limit)
+        Ok(write_buffer.bytes >= limits.rekey_write_limit || dur >= limits.rekey_time_limit)
     }
-
     pub fn new_channel_id(&mut self) -> ChannelId {
         self.last_channel_id += Wrapping(1);
         while self
@@ -532,12 +511,130 @@ pub struct Exchange {
 }
 
 impl Exchange {
-    pub fn new(client_id: &[u8], server_id: &[u8]) -> Self {
+    pub fn new() -> Self {
         Exchange {
-            client_id: client_id.into(),
-            server_id: server_id.into(),
-            ..Default::default()
+            client_id: CryptoVec::new(),
+            server_id: CryptoVec::new(),
+            client_kex_init: CryptoVec::new(),
+            server_kex_init: CryptoVec::new(),
+            client_ephemeral: CryptoVec::new(),
+            server_ephemeral: CryptoVec::new(),
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Kex {
+    /// Version number sent. `algo` and `sent` tell wether kexinit has
+    /// been received, and sent, respectively.
+    Init(KexInit),
+
+    /// Algorithms have been determined, the DH algorithm should run.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Dh(KexDh),
+
+    /// The kex has run.
+    DhDone(KexDhDone),
+
+    /// The DH is over, we've sent the NEWKEYS packet, and are waiting
+    /// the NEWKEYS from the other side.
+    Keys(NewKeys),
+}
+
+#[derive(Debug)]
+pub(crate) struct KexInit {
+    pub algo: Option<negotiation::Names>,
+    pub exchange: Exchange,
+    pub session_id: Option<CryptoVec>,
+    pub sent: bool,
+}
+
+impl KexInit {
+    pub fn received_rekey(ex: Exchange, algo: negotiation::Names, session_id: &CryptoVec) -> Self {
+        let mut kexinit = KexInit {
+            exchange: ex,
+            algo: Some(algo),
+            sent: false,
+            session_id: Some(session_id.clone()),
+        };
+        kexinit.exchange.client_kex_init.clear();
+        kexinit.exchange.server_kex_init.clear();
+        kexinit.exchange.client_ephemeral.clear();
+        kexinit.exchange.server_ephemeral.clear();
+        kexinit
+    }
+
+    pub fn initiate_rekey(ex: Exchange, session_id: &CryptoVec) -> Self {
+        let mut kexinit = KexInit {
+            exchange: ex,
+            algo: None,
+            sent: true,
+            session_id: Some(session_id.clone()),
+        };
+        kexinit.exchange.client_kex_init.clear();
+        kexinit.exchange.server_kex_init.clear();
+        kexinit.exchange.client_ephemeral.clear();
+        kexinit.exchange.server_ephemeral.clear();
+        kexinit
+    }
+}
+
+#[derive(Debug)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct KexDh {
+    pub exchange: Exchange,
+    pub names: negotiation::Names,
+    pub key: usize,
+    pub session_id: Option<CryptoVec>,
+}
+
+pub(crate) struct KexDhDone {
+    pub exchange: Exchange,
+    pub kex: Box<dyn KexAlgorithm + Send>,
+    pub key: usize,
+    pub session_id: Option<CryptoVec>,
+    pub names: negotiation::Names,
+}
+
+impl Debug for KexDhDone {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KexDhDone")
+    }
+}
+
+impl KexDhDone {
+    pub fn compute_keys(self, hash: CryptoVec, is_server: bool) -> Result<NewKeys, crate::Error> {
+        let session_id = if let Some(session_id) = self.session_id {
+            session_id
+        } else {
+            hash.clone()
+        };
+        // Now computing keys.
+        let c = self.kex.compute_keys(
+            &session_id,
+            &hash,
+            self.names.cipher,
+            if is_server {
+                self.names.client_mac
+            } else {
+                self.names.server_mac
+            },
+            if is_server {
+                self.names.server_mac
+            } else {
+                self.names.client_mac
+            },
+            is_server,
+        )?;
+        Ok(NewKeys {
+            exchange: self.exchange,
+            names: self.names,
+            kex: self.kex,
+            key: self.key,
+            cipher: c,
+            session_id,
+            sent: false,
+        })
     }
 }
 
@@ -545,10 +642,11 @@ impl Exchange {
 pub(crate) struct NewKeys {
     pub exchange: Exchange,
     pub names: negotiation::Names,
-    pub kex: KexAlgorithm,
+    pub kex: Box<dyn KexAlgorithm + Send>,
     pub key: usize,
     pub cipher: cipher::CipherPair,
     pub session_id: CryptoVec,
+    pub sent: bool,
 }
 
 #[derive(Debug)]

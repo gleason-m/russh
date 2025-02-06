@@ -417,7 +417,7 @@ impl Session {
 
     pub fn data(&mut self, channel: ChannelId, data: CryptoVec) -> Result<(), crate::Error> {
         if let Some(ref mut enc) = self.common.encrypted {
-            enc.data(channel, data, self.kex.active())
+            enc.data(channel, data)
         } else {
             unreachable!()
         }
@@ -446,7 +446,7 @@ impl Session {
         data: CryptoVec,
     ) -> Result<(), crate::Error> {
         if let Some(ref mut enc) = self.common.encrypted {
-            enc.extended_data(channel, ext, data, self.kex.active())
+            enc.extended_data(channel, ext, data)
         } else {
             unreachable!()
         }

@@ -109,7 +109,16 @@ pub fn encode_pkcs8(key: &ssh_key::PrivateKey) -> Result<Vec<u8>, Error> {
             sk.to_pkcs8_der()?
         }
         ssh_key::private::KeypairData::Rsa(ref pair) => {
-            let sk: rsa::RsaPrivateKey = pair.try_into()?;
+            // TODO: Implementation in ssh-key 0.6.7 is broken (fixed in 0.7.0-pre)
+            let sk = rsa::RsaPrivateKey::from_components(
+                rsa::BigUint::try_from(&pair.public.n)?,
+                rsa::BigUint::try_from(&pair.public.e)?,
+                rsa::BigUint::try_from(&pair.private.d)?,
+                vec![
+                    rsa::BigUint::try_from(&pair.private.p)?,
+                    rsa::BigUint::try_from(&pair.private.q)?,
+                ],
+            )?;
             sk.to_pkcs8_der()?
         }
         ssh_key::private::KeypairData::Ecdsa(ref pair) => match pair {
