@@ -137,9 +137,7 @@ pub struct AuthRequest {
 #[derive(Debug)]
 pub enum CurrentRequest {
     PublicKey {
-        #[allow(dead_code)]
         key: CryptoVec,
-        #[allow(dead_code)]
         algo: CryptoVec,
         sent_pk_ok: bool,
     },
