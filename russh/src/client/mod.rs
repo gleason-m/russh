@@ -57,7 +57,7 @@ use tokio::sync::mpsc::{
 };
 use tokio::sync::oneshot;
 
-pub use crate::auth::AuthResult;
+use crate::auth::AuthResult;
 use crate::channels::{Channel, ChannelMsg, ChannelRef, WindowSizeRef};
 use crate::cipher::{self, clear, OpeningKey};
 use crate::kex::{KexCause, KexProgress, SessionKexState};
