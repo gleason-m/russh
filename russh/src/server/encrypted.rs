@@ -701,7 +701,7 @@ impl Session {
             msg::CHANNEL_EOF => {
                 let channel_num = map_err!(ChannelId::decode(r))?;
                 if let Some(chan) = self.channels.get(&channel_num) {
-                    chan.send(ChannelMsg::Eof).await.unwrap_or(())
+                    chan.send(ChannelMsg::Eof).unwrap_or(())
                 }
                 debug!("handler.channel_eof {:?}", channel_num);
                 handler.channel_eof(channel_num, self).await
@@ -733,7 +733,6 @@ impl Session {
                             ext,
                             data: CryptoVec::from_slice(&data),
                         })
-                        .await
                         .unwrap_or(())
                     }
                     handler.extended_data(channel_num, ext, &data, self).await
@@ -742,7 +741,6 @@ impl Session {
                         chan.send(ChannelMsg::Data {
                             data: CryptoVec::from_slice(&data),
                         })
-                        .await
                         .unwrap_or(())
                     }
                     handler.data(channel_num, &data, self).await
@@ -768,7 +766,6 @@ impl Session {
                     chan.window_size().update(new_size).await;
 
                     chan.send(ChannelMsg::WindowAdjusted { new_size })
-                        .await
                         .unwrap_or(())
                 }
                 debug!("handler.window_adjusted {:?}", channel_num);
@@ -798,7 +795,6 @@ impl Session {
                             max_packet_size: msg.maximum_packet_size,
                             window_size: msg.initial_window_size,
                         })
-                        .await
                         .unwrap_or(());
                 } else {
                     error!("no channel for id {:?}", local_id);
@@ -857,17 +853,15 @@ impl Session {
                         }
 
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::RequestPty {
-                                    want_reply: true,
-                                    term: term.clone(),
-                                    col_width,
-                                    row_height,
-                                    pix_width,
-                                    pix_height,
-                                    terminal_modes: modes.into(),
-                                })
-                                .await;
+                            let _ = chan.send(ChannelMsg::RequestPty {
+                                want_reply: true,
+                                term: term.clone(),
+                                col_width,
+                                row_height,
+                                pix_width,
+                                pix_height,
+                                terminal_modes: modes.into(),
+                            });
                         }
 
                         debug!("handler.pty_request {:?}", channel_num);
@@ -892,15 +886,13 @@ impl Session {
                         let x11_screen_number = map_err!(u32::decode(r))?;
 
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::RequestX11 {
-                                    want_reply: true,
-                                    single_connection,
-                                    x11_authentication_cookie: x11_auth_cookie.clone(),
-                                    x11_authentication_protocol: x11_auth_protocol.clone(),
-                                    x11_screen_number,
-                                })
-                                .await;
+                            let _ = chan.send(ChannelMsg::RequestX11 {
+                                want_reply: true,
+                                single_connection,
+                                x11_authentication_cookie: x11_auth_cookie.clone(),
+                                x11_authentication_protocol: x11_auth_protocol.clone(),
+                                x11_screen_number,
+                            });
                         }
                         debug!("handler.x11_request {:?}", channel_num);
                         handler
@@ -919,13 +911,11 @@ impl Session {
                         let env_value = map_err!(String::decode(r))?;
 
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::SetEnv {
-                                    want_reply: true,
-                                    variable_name: env_variable.clone(),
-                                    variable_value: env_value.clone(),
-                                })
-                                .await;
+                            let _ = chan.send(ChannelMsg::SetEnv {
+                                want_reply: true,
+                                variable_name: env_variable.clone(),
+                                variable_value: env_value.clone(),
+                            });
                         }
 
                         debug!("handler.env_request {:?}", channel_num);
@@ -935,18 +925,14 @@ impl Session {
                     }
                     "shell" => {
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::RequestShell { want_reply: true })
-                                .await;
+                            let _ = chan.send(ChannelMsg::RequestShell { want_reply: true });
                         }
                         debug!("handler.shell_request {:?}", channel_num);
                         handler.shell_request(channel_num, self).await
                     }
                     "auth-agent-req@openssh.com" => {
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::AgentForward { want_reply: true })
-                                .await;
+                            let _ = chan.send(ChannelMsg::AgentForward { want_reply: true });
                         }
                         debug!("handler.agent_request {:?}", channel_num);
 
@@ -961,12 +947,10 @@ impl Session {
                     "exec" => {
                         let req = map_err!(Bytes::decode(r))?;
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::Exec {
-                                    want_reply: true,
-                                    command: req.to_vec(),
-                                })
-                                .await;
+                            let _ = chan.send(ChannelMsg::Exec {
+                                want_reply: true,
+                                command: req.to_vec(),
+                            });
                         }
                         debug!("handler.exec_request {:?}", channel_num);
                         handler.exec_request(channel_num, &req, self).await
@@ -975,12 +959,10 @@ impl Session {
                         let name = map_err!(String::decode(r))?;
 
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::RequestSubsystem {
-                                    want_reply: true,
-                                    name: name.clone(),
-                                })
-                                .await;
+                            let _ = chan.send(ChannelMsg::RequestSubsystem {
+                                want_reply: true,
+                                name: name.clone(),
+                            });
                         }
                         debug!("handler.subsystem_request {:?}", channel_num);
                         handler.subsystem_request(channel_num, &name, self).await
@@ -992,14 +974,12 @@ impl Session {
                         let pix_height = map_err!(u32::decode(r))?;
 
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            let _ = chan
-                                .send(ChannelMsg::WindowChange {
-                                    col_width,
-                                    row_height,
-                                    pix_width,
-                                    pix_height,
-                                })
-                                .await;
+                            let _ = chan.send(ChannelMsg::WindowChange {
+                                col_width,
+                                row_height,
+                                pix_width,
+                                pix_height,
+                            });
                         }
 
                         debug!("handler.window_change {:?}", channel_num);
@@ -1020,7 +1000,6 @@ impl Session {
                             chan.send(ChannelMsg::Signal {
                                 signal: signal.clone(),
                             })
-                            .await
                             .unwrap_or(())
                         }
                         debug!("handler.signal {:?} {:?}", channel_num, signal);
@@ -1131,7 +1110,6 @@ impl Session {
                 if let Some(channel_sender) = self.channels.remove(&channel_num) {
                     channel_sender
                         .send(ChannelMsg::OpenFailure(reason))
-                        .await
                         .map_err(|_| crate::Error::SendError)?;
                 }
 
@@ -1226,7 +1204,6 @@ impl Session {
             self.sender.sender.clone(),
             channel_params.recipient_maximum_packet_size,
             channel_params.recipient_window_size,
-            self.common.config.channel_buffer_size,
         );
 
         match &msg.typ {

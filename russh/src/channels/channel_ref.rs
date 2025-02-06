@@ -1,4 +1,4 @@
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 
 use super::WindowSizeRef;
 use crate::ChannelMsg;
@@ -7,12 +7,12 @@ use crate::ChannelMsg;
 /// to it and update it's `window_size`.
 #[derive(Debug)]
 pub struct ChannelRef {
-    pub(super) sender: Sender<ChannelMsg>,
+    pub(super) sender: UnboundedSender<ChannelMsg>,
     pub(super) window_size: WindowSizeRef,
 }
 
 impl ChannelRef {
-    pub fn new(sender: Sender<ChannelMsg>) -> Self {
+    pub fn new(sender: UnboundedSender<ChannelMsg>) -> Self {
         Self {
             sender,
             window_size: WindowSizeRef::new(0),
@@ -25,7 +25,7 @@ impl ChannelRef {
 }
 
 impl std::ops::Deref for ChannelRef {
-    type Target = Sender<ChannelMsg>;
+    type Target = UnboundedSender<ChannelMsg>;
 
     fn deref(&self) -> &Self::Target {
         &self.sender
