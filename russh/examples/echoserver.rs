@@ -92,8 +92,9 @@ impl server::Handler for Server {
     async fn auth_openssh_certificate(
         &mut self,
         _user: &str,
-        _certificate: &Certificate,
+        certificate: &Certificate,
     ) -> Result<server::Auth, Self::Error> {
+        dbg!(certificate);
         Ok(server::Auth::Accept)
     }
 
