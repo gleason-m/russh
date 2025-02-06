@@ -26,7 +26,7 @@ use crate::negotiation::{Named, Select};
 use crate::parsing::{ChannelOpenConfirmation, ChannelType, OpenChannelMessage};
 use crate::session::{Encrypted, EncryptedState, GlobalRequestResponse, Kex, KexInit};
 use crate::{
-    auth, msg, negotiation, Channel, ChannelId, ChannelMsg,
+    auth, msg, negotiation, strict_kex_violation, Channel, ChannelId, ChannelMsg,
     ChannelOpenFailure, ChannelParams, CryptoVec, Sig,
 };
 
@@ -70,9 +70,11 @@ impl Session {
                     None
                 };
 
-                if let Some(mut kexinit) = kexinit {
-                    if let Some(ref mut algo) = kexinit.algo {
-                        algo.strict_kex = algo.strict_kex || self.common.strict_kex;
+                if let Some(kexinit) = kexinit {
+                    if let Some(ref algo) = kexinit.algo {
+                        if self.common.strict_kex && !algo.strict_kex {
+                            return Err(strict_kex_violation(msg::KEXINIT, 0).into());
+                        }
                     }
 
                     let dhdone = kexinit.client_parse(
