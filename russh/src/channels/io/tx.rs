@@ -1,8 +1,4 @@
-use std::convert::TryFrom;
-use std::future::Future;
 use std::io;
-use std::num::NonZero;
-use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
@@ -11,7 +7,7 @@ use futures::FutureExt;
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self, OwnedPermit};
-use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::ChannelMsg;
 use crate::{ChannelId, CryptoVec};
@@ -20,34 +16,13 @@ type BoxedThreadsafeFuture<T> = Pin<Box<dyn Sync + Send + std::future::Future<Ou
 type OwnedPermitFuture<S> =
     BoxedThreadsafeFuture<Result<(OwnedPermit<S>, ChannelMsg, usize), SendError<()>>>;
 
-struct WatchNotification(Pin<Box<dyn Sync + Send + Future<Output = ()>>>);
-
-/// A single future that becomes ready once the window size
-/// changes to a positive value
-impl WatchNotification {
-    fn new(n: Arc<Notify>) -> Self {
-        Self(Box::pin(async move { n.notified().await }))
-    }
-}
-
-impl Future for WatchNotification {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let inner = self.deref_mut().0.as_mut();
-        ready!(inner.poll(cx));
-        Poll::Ready(())
-    }
-}
-
 pub struct ChannelTx<S> {
     sender: mpsc::Sender<S>,
     send_fut: Option<OwnedPermitFuture<S>>,
     id: ChannelId,
+
     window_size_fut: Option<BoxedThreadsafeFuture<OwnedMutexGuard<u32>>>,
     window_size: Arc<Mutex<u32>>,
-    notify: Arc<Notify>,
-    window_size_notication: WatchNotification,
     max_packet_size: u32,
     ext: Option<u32>,
 }
@@ -60,7 +35,6 @@ where
         sender: mpsc::Sender<S>,
         id: ChannelId,
         window_size: Arc<Mutex<u32>>,
-        window_size_notification: Arc<Notify>,
         max_packet_size: u32,
         ext: Option<u32>,
     ) -> Self {
@@ -68,8 +42,6 @@ where
             sender,
             send_fut: None,
             id,
-            notify: Arc::clone(&window_size_notification),
-            window_size_notication: WatchNotification::new(window_size_notification),
             window_size,
             window_size_fut: None,
             max_packet_size,
@@ -77,7 +49,7 @@ where
         }
     }
 
-    fn poll_writable(&mut self, cx: &mut Context<'_>, buf_len: usize) -> Poll<NonZero<usize>> {
+    fn poll_mk_msg(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<(ChannelMsg, usize)> {
         let window_size = self.window_size.clone();
         let window_size_fut = self
             .window_size_fut
@@ -85,37 +57,21 @@ where
         let mut window_size = ready!(window_size_fut.poll_unpin(cx));
         self.window_size_fut.take();
 
-        let writable = (self.max_packet_size).min(*window_size).min(buf_len as u32) as usize;
-
-        match NonZero::try_from(writable) {
-            Ok(w) => {
-                *window_size -= writable as u32;
-                if *window_size > 0 {
-                    self.notify.notify_one();
-                }
-                Poll::Ready(w)
-            }
-            Err(_) => {
-                drop(window_size);
-                ready!(self.window_size_notication.poll_unpin(cx));
-                self.window_size_notication = WatchNotification::new(Arc::clone(&self.notify));
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
+        let writable = (self.max_packet_size)
+            .min(*window_size)
+            .min(buf.len() as u32) as usize;
+        if writable == 0 {
+            // TODO fix this busywait
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
         }
-    }
+        let mut data = CryptoVec::new_zeroed(writable);
+        #[allow(clippy::indexing_slicing)] // Clamped to maximum `buf.len()` with `.min`
+        data.copy_from_slice(&buf[..writable]);
+        data.resize(writable);
 
-    fn poll_mk_msg(
-        &mut self,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<(ChannelMsg, NonZero<usize>)> {
-        let writable = ready!(self.poll_writable(cx, buf.len()));
-
-        let mut data = CryptoVec::new_zeroed(writable.into());
-        #[allow(clippy::indexing_slicing)] // Clamped to maximum `buf.len()` with `.poll_writable`
-        data.copy_from_slice(&buf[..writable.into()]);
-        data.resize(writable.into());
+        *window_size -= writable as u32;
+        drop(window_size);
 
         let msg = match self.ext {
             None => ChannelMsg::Data { data },
@@ -160,17 +116,11 @@ where
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        if buf.is_empty() {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "cannot send empty buffer",
-            )));
-        }
         let send_fut = if let Some(x) = self.send_fut.as_mut() {
             x
         } else {
             let (msg, writable) = ready!(self.poll_mk_msg(cx, buf));
-            self.activate(msg, writable.into())
+            self.activate(msg, writable)
         };
         let r = ready!(send_fut.as_mut().poll_unpin(cx));
         Poll::Ready(self.handle_write_result(r))
@@ -191,12 +141,5 @@ where
         };
         let r = ready!(send_fut.as_mut().poll_unpin(cx)).map(|(p, _, _)| (p, ChannelMsg::Eof, 0));
         Poll::Ready(self.handle_write_result(r).map(drop))
-    }
-}
-
-impl<S> Drop for ChannelTx<S> {
-    fn drop(&mut self) {
-        // Allow other writers to make progress
-        self.notify.notify_one();
     }
 }

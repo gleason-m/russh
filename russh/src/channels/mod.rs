@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{Sender, UnboundedReceiver};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 
 use crate::{ChannelId, ChannelOpenFailure, CryptoVec, Error, Pty, Sig};
 
@@ -112,31 +112,6 @@ pub enum ChannelMsg {
     OpenFailure(ChannelOpenFailure),
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct WindowSizeRef {
-    value: Arc<Mutex<u32>>,
-    notifier: Arc<Notify>,
-}
-
-impl WindowSizeRef {
-    pub(crate) fn new(initial: u32) -> Self {
-        let notifier = Arc::new(Notify::new());
-        Self {
-            value: Arc::new(Mutex::new(initial)),
-            notifier,
-        }
-    }
-
-    pub(crate) async fn update(&self, value: u32) {
-        *self.value.lock().await = value;
-        self.notifier.notify_one();
-    }
-
-    pub(crate) fn subscribe(&self) -> Arc<Notify> {
-        Arc::clone(&self.notifier)
-    }
-}
-
 /// A handle to a session channel.
 ///
 /// Allows you to read and write from a channel without borrowing the session
@@ -145,7 +120,7 @@ pub struct Channel<Send: From<(ChannelId, ChannelMsg)>> {
     pub(crate) sender: Sender<Send>,
     pub(crate) receiver: UnboundedReceiver<ChannelMsg>,
     pub(crate) max_packet_size: u32,
-    pub(crate) window_size: WindowSizeRef,
+    pub(crate) window_size: Arc<Mutex<u32>>,
 }
 
 impl<T: From<(ChannelId, ChannelMsg)>> std::fmt::Debug for Channel<T> {
@@ -162,7 +137,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
         window_size: u32,
     ) -> (Self, ChannelRef) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let window_size = WindowSizeRef::new(window_size);
+        let window_size = Arc::new(Mutex::new(window_size));
 
         (
             Self {
@@ -182,8 +157,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     /// Returns the min between the maximum packet size and the
     /// remaining window size in the channel.
     pub async fn writable_packet_size(&self) -> usize {
-        self.max_packet_size
-            .min(*self.window_size.value.lock().await) as usize
+        self.max_packet_size.min(*self.window_size.lock().await) as usize
     }
 
     pub fn id(&self) -> ChannelId {
@@ -363,8 +337,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
             io::ChannelTx::new(
                 self.sender.clone(),
                 self.id,
-                self.window_size.value.clone(),
-                self.window_size.subscribe(),
+                self.window_size.clone(),
                 self.max_packet_size,
                 None,
             ),
@@ -396,8 +369,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
         io::ChannelTx::new(
             self.sender.clone(),
             self.id,
-            self.window_size.value.clone(),
-            self.window_size.subscribe(),
+            self.window_size.clone(),
             self.max_packet_size,
             ext,
         )
