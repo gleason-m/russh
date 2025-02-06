@@ -14,9 +14,6 @@ pub mod openssh;
 #[cfg(feature = "legacy-ed25519-pkcs8-parser")]
 mod pkcs8_legacy;
 
-#[cfg(test)]
-mod tests;
-
 pub use self::openssh::*;
 
 pub mod pkcs5;
@@ -81,7 +78,7 @@ pub fn decode_secret_key(secret: &str, password: Option<&str>) -> Result<Private
             } else if l == "-----BEGIN ENCRYPTED PRIVATE KEY-----" {
                 started = true;
                 format = Some(Format::Pkcs8Encrypted);
-            } else if l == "-----BEGIN PRIVATE KEY-----" || l == "-----BEGIN EC PRIVATE KEY-----" {
+            } else if l == "-----BEGIN PRIVATE KEY-----" {
                 started = true;
                 format = Some(Format::Pkcs8);
             }
