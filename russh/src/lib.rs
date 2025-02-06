@@ -150,7 +150,6 @@ mod parsing;
 mod session;
 
 /// Server side of this library.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 
 /// Client side of this library.
@@ -294,7 +293,7 @@ pub enum Error {
     Decompress(#[from] flate2::DecompressError),
 
     #[error(transparent)]
-    Join(#[from] russh_util::runtime::JoinError),
+    Join(#[from] tokio::task::JoinError),
 
     #[error(transparent)]
     #[cfg(feature = "openssl")]
@@ -519,7 +518,6 @@ pub(crate) struct ChannelParams {
     sender_maximum_packet_size: u32,
     /// Has the other side confirmed the channel?
     pub confirmed: bool,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     wants_reply: bool,
     pending_data: std::collections::VecDeque<(CryptoVec, Option<u32>, usize)>,
     pending_eof: bool,

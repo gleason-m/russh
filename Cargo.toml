@@ -1,6 +1,5 @@
 [workspace]
-members = ["russh-keys", "russh", "russh-config", "cryptovec", "pageant", "russh-util"]
-resolver = "2"
+members = ["russh-keys", "russh", "russh-config", "cryptovec", "pageant"]
 
 [patch.crates-io]
 russh = { path = "russh" }
