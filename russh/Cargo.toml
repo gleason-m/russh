@@ -86,3 +86,11 @@ ratatui = "0.26.0"
 
 [package.metadata.docs.rs]
 features = ["openssl"]
+<<<<<<< HEAD
+=======
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+openssl = { workspace = true, optional = true }
+russh-sftp = "2.0.0-beta.2"
+tokio = { workspace = true }
+>>>>>>> parent of cd84f4d (Update sftp examples (#357))
