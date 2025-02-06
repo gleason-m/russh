@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use log::debug;
-use negotiation::parse_kex_algo_list;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{unbounded_channel, Receiver, Sender, UnboundedReceiver};
 use tokio::sync::{oneshot, Mutex};
@@ -1089,10 +1088,9 @@ impl Session {
                     use super::negotiation::Select;
                     key_extension_client = super::negotiation::Server::select(
                         &[EXTENSION_SUPPORT_AS_CLIENT],
-                        &parse_kex_algo_list(kex_string),
-                        AlgorithmKind::Kex,
+                        kex_string,
                     )
-                    .is_ok();
+                    .is_some();
                 }
             }
 

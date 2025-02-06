@@ -24,7 +24,7 @@ use crate::keys::encoding::{Encoding, Reader};
 use crate::keys::key;
 use crate::keys::key::{KeyPair, PublicKey};
 use crate::server::Config;
-use crate::{cipher, compression, kex, mac, msg, AlgorithmKind, CryptoVec, Error};
+use crate::{cipher, compression, kex, mac, msg, CryptoVec, Error};
 
 #[derive(Debug, Clone)]
 pub struct Names {
@@ -167,20 +167,10 @@ impl Named for KeyPair {
     }
 }
 
-pub(crate) fn parse_kex_algo_list(list: &[u8]) -> Vec<&str> {
-    list.split(|&x| x == b',')
-        .map(|x| from_utf8(x).unwrap_or_default())
-        .collect()
-}
-
 pub(crate) trait Select {
     fn is_server() -> bool;
 
-    fn select<S: AsRef<str> + Clone>(
-        a: &[S],
-        b: &[&str],
-        kind: AlgorithmKind,
-    ) -> Result<(bool, S), Error>;
+    fn select<S: AsRef<str> + Clone>(a: &[S], b: &[u8]) -> Option<(bool, S)>;
 
     /// `available_host_keys`, if present, is used to limit the host key algorithms to the ones we have keys for.
     fn read_kex(
@@ -193,11 +183,15 @@ pub(crate) trait Select {
         // Key exchange
 
         let kex_string = r.read_string()?;
-        let (kex_both_first, kex_algorithm) = Self::select(
-            &pref.kex,
-            &parse_kex_algo_list(kex_string),
-            AlgorithmKind::Kex,
-        )?;
+        let (kex_both_first, kex_algorithm) = Self::select(&pref.kex, kex_string).ok_or_else(||
+        {
+            debug!(
+                "Could not find common kex algorithm, other side only supports {:?}, we only support {:?}",
+                from_utf8(kex_string),
+                pref.kex
+            );
+            Error::NoCommonKexAlgo
+        })?;
 
         // Strict kex detection
 
@@ -212,10 +206,9 @@ pub(crate) trait Select {
             } else {
                 EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER
             }],
-            &parse_kex_algo_list(kex_string),
-            AlgorithmKind::Kex,
+            kex_string,
         )
-        .is_ok();
+        .is_some();
         if strict_kex_requested && strict_kex_provided {
             debug!("strict kex enabled")
         }
@@ -228,20 +221,28 @@ pub(crate) trait Select {
             None => pref.key.iter().map(ToOwned::to_owned).collect::<Vec<_>>(),
         };
 
-        let (key_both_first, key_algorithm) = Self::select(
-            &possible_host_key_algos[..],
-            &parse_kex_algo_list(key_string),
-            AlgorithmKind::Key,
-        )?;
+        let (key_both_first, key_algorithm) =
+            Self::select(&possible_host_key_algos[..], key_string).ok_or_else(|| {
+                debug!(
+                    "Could not find common key algorithm, other side only supports {:?}, we only support {:?}",
+                    from_utf8(key_string),
+                    pref.key
+                );
+                Error::NoCommonKeyAlgo
+            })?;
 
         // Cipher
 
         let cipher_string = r.read_string()?;
-        let (_cipher_both_first, cipher) = Self::select(
-            &pref.cipher,
-            &parse_kex_algo_list(cipher_string),
-            AlgorithmKind::Cipher,
-        )?;
+        let (_cipher_both_first, cipher) =
+            Self::select(&pref.cipher, cipher_string).ok_or_else(|| {
+                debug!(
+                "Could not find common cipher, other side only supports {:?}, we only support {:?}",
+                from_utf8(cipher_string),
+                pref.cipher
+            );
+                Error::NoCommonCipher
+            })?;
         r.read_string()?; // cipher server-to-client.
         debug!("kex {}", line!());
 
@@ -249,58 +250,39 @@ pub(crate) trait Select {
 
         let need_mac = CIPHERS.get(&cipher).map(|x| x.needs_mac()).unwrap_or(false);
 
-        let client_mac = match Self::select(
-            &pref.mac,
-            &parse_kex_algo_list(r.read_string()?),
-            AlgorithmKind::Mac,
-        ) {
-            Ok((_, m)) => m,
-            Err(e) => {
-                if need_mac {
-                    return Err(e);
-                } else {
-                    mac::NONE
-                }
-            }
+        let client_mac = if let Some((_, m)) = Self::select(&pref.mac, r.read_string()?) {
+            m
+        } else if need_mac {
+            return Err(Error::NoCommonMac);
+        } else {
+            mac::NONE
         };
-        let server_mac = match Self::select(
-            &pref.mac,
-            &parse_kex_algo_list(r.read_string()?),
-            AlgorithmKind::Mac,
-        ) {
-            Ok((_, m)) => m,
-            Err(e) => {
-                if need_mac {
-                    return Err(e);
-                } else {
-                    mac::NONE
-                }
-            }
+        let server_mac = if let Some((_, m)) = Self::select(&pref.mac, r.read_string()?) {
+            m
+        } else if need_mac {
+            return Err(Error::NoCommonMac);
+        } else {
+            mac::NONE
         };
 
         // Compression
 
         debug!("kex {}", line!());
         // client-to-server compression.
-        let client_compression = compression::Compression::new(
-            &Self::select(
-                &pref.compression,
-                &parse_kex_algo_list(r.read_string()?),
-                AlgorithmKind::Compression,
-            )?
-            .1,
-        );
-
+        let client_compression =
+            if let Some((_, c)) = Self::select(&pref.compression, r.read_string()?) {
+                compression::Compression::new(&c)
+            } else {
+                return Err(Error::NoCommonCompression);
+            };
         debug!("kex {}", line!());
         // server-to-client compression.
-        let server_compression = compression::Compression::new(
-            &Self::select(
-                &pref.compression,
-                &parse_kex_algo_list(r.read_string()?),
-                AlgorithmKind::Compression,
-            )?
-            .1,
-        );
+        let server_compression =
+            if let Some((_, c)) = Self::select(&pref.compression, r.read_string()?) {
+                compression::Compression::new(&c)
+            } else {
+                return Err(Error::NoCommonCompression);
+            };
         debug!("client_compression = {:?}", client_compression);
         r.read_string()?; // languages client-to-server
         r.read_string()?; // languages server-to-client
@@ -329,25 +311,17 @@ impl Select for Server {
         true
     }
 
-    fn select<S: AsRef<str> + Clone>(
-        server_list: &[S],
-        client_list: &[&str],
-        kind: AlgorithmKind,
-    ) -> Result<(bool, S), Error> {
+    fn select<S: AsRef<str> + Clone>(server_list: &[S], client_list: &[u8]) -> Option<(bool, S)> {
         let mut both_first_choice = true;
-        for c in client_list {
+        for c in client_list.split(|&x| x == b',') {
             for s in server_list {
-                if c == &s.as_ref() {
-                    return Ok((both_first_choice, s.clone()));
+                if c == s.as_ref().as_bytes() {
+                    return Some((both_first_choice, s.clone()));
                 }
                 both_first_choice = false
             }
         }
-        Err(Error::NoCommonAlgo {
-            kind,
-            ours: server_list.iter().map(|x| x.as_ref().to_owned()).collect(),
-            theirs: client_list.iter().map(|x| (*x).to_owned()).collect(),
-        })
+        None
     }
 }
 
@@ -356,25 +330,17 @@ impl Select for Client {
         false
     }
 
-    fn select<S: AsRef<str> + Clone>(
-        client_list: &[S],
-        server_list: &[&str],
-        kind: AlgorithmKind,
-    ) -> Result<(bool, S), Error> {
+    fn select<S: AsRef<str> + Clone>(client_list: &[S], server_list: &[u8]) -> Option<(bool, S)> {
         let mut both_first_choice = true;
         for c in client_list {
-            for s in server_list {
-                if s == &c.as_ref() {
-                    return Ok((both_first_choice, c.clone()));
+            for s in server_list.split(|&x| x == b',') {
+                if s == c.as_ref().as_bytes() {
+                    return Some((both_first_choice, c.clone()));
                 }
                 both_first_choice = false
             }
         }
-        Err(Error::NoCommonAlgo {
-            kind,
-            ours: client_list.iter().map(|x| x.as_ref().to_owned()).collect(),
-            theirs: server_list.iter().map(|x| (*x).to_owned()).collect(),
-        })
+        None
     }
 }
 
