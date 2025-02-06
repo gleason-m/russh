@@ -48,7 +48,6 @@ async fn main() {
         .authenticate_password("root", "password")
         .await
         .unwrap()
-        .success()
     {
         let channel = session.channel_open_session().await.unwrap();
         channel.request_subsystem(true, "sftp").await.unwrap();

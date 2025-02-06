@@ -57,7 +57,6 @@ use tokio::sync::mpsc::{
 };
 use tokio::sync::oneshot;
 
-use crate::auth::AuthResult;
 use crate::channels::{Channel, ChannelMsg, ChannelRef, WindowSizeRef};
 use crate::cipher::{self, clear, OpeningKey};
 use crate::kex::{KexCause, KexProgress, SessionKexState};
@@ -67,7 +66,7 @@ use crate::ssh_read::SshRead;
 use crate::sshbuffer::{IncomingSshPacket, PacketWriter, SSHBuffer, SshId};
 use crate::{
     auth, msg, negotiation, ChannelId, ChannelOpenFailure, CryptoVec, Disconnect, Error, Limits,
-    MethodSet, Sig,
+    Sig,
 };
 
 mod encrypted;
@@ -104,9 +103,7 @@ impl Drop for Session {
 #[allow(clippy::large_enum_variant)]
 enum Reply {
     AuthSuccess,
-    AuthFailure {
-        proceed_with_methods: MethodSet,
-    },
+    AuthFailure,
     ChannelOpenFailure,
     SignRequest {
         key: ssh_key::PublicKey,
@@ -193,9 +190,7 @@ impl From<(ChannelId, ChannelMsg)> for Msg {
 #[derive(Debug)]
 pub enum KeyboardInteractiveAuthResponse {
     Success,
-    Failure {
-        remaining_methods: MethodSet,
-    },
+    Failure,
     InfoRequest {
         name: String,
         instructions: String,
@@ -247,7 +242,7 @@ impl<H: Handler> Handle<H> {
     pub async fn authenticate_none<U: Into<String>>(
         &mut self,
         user: U,
-    ) -> Result<AuthResult, crate::Error> {
+    ) -> Result<bool, crate::Error> {
         let user = user.into();
         self.sender
             .send(Msg::Authenticate {
@@ -264,7 +259,7 @@ impl<H: Handler> Handle<H> {
         &mut self,
         user: U,
         password: P,
-    ) -> Result<AuthResult, crate::Error> {
+    ) -> Result<bool, crate::Error> {
         let user = user.into();
         self.sender
             .send(Msg::Authenticate {
@@ -324,9 +319,7 @@ impl<H: Handler> Handle<H> {
         loop {
             match self.receiver.recv().await {
                 Some(Reply::AuthSuccess) => return Ok(KeyboardInteractiveAuthResponse::Success),
-                Some(Reply::AuthFailure {
-                    proceed_with_methods: remaining_methods,
-                }) => return Ok(KeyboardInteractiveAuthResponse::Failure { remaining_methods }),
+                Some(Reply::AuthFailure) => return Ok(KeyboardInteractiveAuthResponse::Failure),
                 Some(Reply::AuthInfoRequest {
                     name,
                     instructions,
@@ -343,18 +336,12 @@ impl<H: Handler> Handle<H> {
         }
     }
 
-    async fn wait_recv_reply(&mut self) -> Result<AuthResult, crate::Error> {
+    async fn wait_recv_reply(&mut self) -> Result<bool, crate::Error> {
         loop {
             match self.receiver.recv().await {
-                Some(Reply::AuthSuccess) => return Ok(AuthResult::Success),
-                Some(Reply::AuthFailure {
-                    proceed_with_methods: remaining_methods,
-                }) => return Ok(AuthResult::Failure { remaining_methods }),
-                None => {
-                    return Ok(AuthResult::Failure {
-                        remaining_methods: MethodSet::empty(),
-                    })
-                }
+                Some(Reply::AuthSuccess) => return Ok(true),
+                Some(Reply::AuthFailure) => return Ok(false),
+                None => return Ok(false),
                 _ => {}
             }
         }
@@ -365,7 +352,7 @@ impl<H: Handler> Handle<H> {
         &mut self,
         user: U,
         key: PrivateKeyWithHashAlg,
-    ) -> Result<AuthResult, crate::Error> {
+    ) -> Result<bool, crate::Error> {
         let user = user.into();
         self.sender
             .send(Msg::Authenticate {
@@ -383,7 +370,7 @@ impl<H: Handler> Handle<H> {
         user: U,
         key: Arc<PrivateKey>,
         cert: Certificate,
-    ) -> Result<AuthResult, crate::Error> {
+    ) -> Result<bool, crate::Error> {
         let user = user.into();
         self.sender
             .send(Msg::Authenticate {
@@ -403,7 +390,7 @@ impl<H: Handler> Handle<H> {
         user: U,
         key: ssh_key::PublicKey,
         signer: &mut S,
-    ) -> Result<AuthResult, S::Error> {
+    ) -> Result<bool, S::Error> {
         let user = user.into();
         if self
             .sender
@@ -419,10 +406,8 @@ impl<H: Handler> Handle<H> {
         loop {
             let reply = self.receiver.recv().await;
             match reply {
-                Some(Reply::AuthSuccess) => return Ok(AuthResult::Success),
-                Some(Reply::AuthFailure {
-                    proceed_with_methods: remaining_methods,
-                }) => return Ok(AuthResult::Failure { remaining_methods }),
+                Some(Reply::AuthSuccess) => return Ok(true),
+                Some(Reply::AuthFailure) => return Ok(false),
                 Some(Reply::SignRequest { key, data }) => {
                     let data = signer.auth_publickey_sign(&key, data).await;
                     let data = match data {
@@ -433,11 +418,7 @@ impl<H: Handler> Handle<H> {
                         return Err((crate::SendError {}).into());
                     }
                 }
-                None => {
-                    return Ok(AuthResult::Failure {
-                        remaining_methods: MethodSet::empty(),
-                    })
-                }
+                None => return Ok(false),
                 _ => {}
             }
         }

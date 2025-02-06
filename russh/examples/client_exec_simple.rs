@@ -100,8 +100,8 @@ impl Session {
             .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key_pair), None)?)
             .await?;
 
-        if !auth_res.success() {
-            anyhow::bail!("Authentication failed: {auth_res:?}");
+        if !auth_res {
+            anyhow::bail!("Authentication failed");
         }
 
         Ok(Self { session })
