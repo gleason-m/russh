@@ -448,15 +448,7 @@ impl Encrypted {
                 };
 
                 if is_real != 0 {
-                    // SAFETY: both original_packet and pos0 are coming
-                    // from the same allocation (pos0 is derived from
-                    // a slice of the original_packet)
-                    let sig_init_buffer = {
-                        let pos0 = r.as_ptr();
-                        let init_len = unsafe { pos0.offset_from(original_packet.as_ptr()) };
-                        #[allow(clippy::indexing_slicing)] // length checked
-                        &original_packet[0..init_len as usize]
-                    };
+                    let pos0 = r.as_ptr();
 
                     let sent_pk_ok = if let Some(CurrentRequest::PublicKey { sent_pk_ok, .. }) =
                         auth_request.current
@@ -471,6 +463,15 @@ impl Encrypted {
                     let sig = map_err!(sig_workaround::Sig::decode(
                         &mut encoded_signature.as_slice()
                     ))?;
+
+                    // SAFETY: both original_packet and pos0 are coming
+                    // from the same allocation (pos0 is derived from
+                    // a slice of the original_packet)
+                    let init = {
+                        let init_len = unsafe { pos0.offset_from(original_packet.as_ptr()) };
+                        #[allow(clippy::indexing_slicing)] // length checked
+                        &original_packet[0..init_len as usize]
+                    };
 
                     let is_valid = if sent_pk_ok && user == auth_user {
                         true
@@ -490,7 +491,7 @@ impl Encrypted {
                             let mut buf = buf.borrow_mut();
                             buf.clear();
                             map_err!(session_id.encode(&mut *buf))?;
-                            buf.extend(sig_init_buffer);
+                            buf.extend(init);
 
                             Ok(sig_workaround::verify(&pubkey, &buf, &sig).is_ok())
                         })? {

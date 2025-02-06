@@ -189,7 +189,6 @@ impl SshConfigStrExt for &str {
             && ((self.starts_with('\'') && self.ends_with('\''))
                 || (self.starts_with('\"') && self.ends_with('\"')))
         {
-            #[allow(clippy::indexing_slicing)] // length checked
             &self[1..self.len() - 1]
         } else {
             self
