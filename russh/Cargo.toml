@@ -15,8 +15,6 @@ rust-version = "1.65"
 [features]
 default = ["flate2"]
 legacy-ed25519-pkcs8-parser = ["russh-keys/legacy-ed25519-pkcs8-parser"]
-# Danger: 3DES cipher is insecure.
-des = ["dep:des"]
 
 [dependencies]
 aes.workspace = true
@@ -57,7 +55,7 @@ ssh-key.workspace = true
 subtle = "2.4"
 thiserror.workspace = true
 russh-util = { version = "0.48.0", path = "../russh-util" }
-des = { version = "0.8.1", optional = true }
+des = "0.8.1"
 tokio = { workspace = true, features = ["io-util", "sync", "time"] }
 
 [dev-dependencies]
